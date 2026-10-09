@@ -6,8 +6,10 @@ package main
 //	docker compose run --rm -v ./api:/src api go test ./...
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -214,6 +216,7 @@ func TestUpdatePersonGivesUpOnALockedRow(t *testing.T) {
 	saved := updateTimeout
 	updateTimeout = 300 * time.Millisecond
 	t.Cleanup(func() { updateTimeout = saved })
+	logs := captureLog(t)
 
 	start := time.Now()
 	rec := do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 21}`)
@@ -226,6 +229,9 @@ func TestUpdatePersonGivesUpOnALockedRow(t *testing.T) {
 	if err := tx.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// "Not saved" must stay true after the lock is released: an UPDATE that was
+	// only abandoned on the Go side would now go through and commit.
+	time.Sleep(500 * time.Millisecond)
 	var stored float64
 	if err := s.db.QueryRow(ctx, `SELECT weekly_hours::float8 FROM people WHERE id = 3`).Scan(&stored); err != nil {
 		t.Fatal(err)
@@ -233,4 +239,32 @@ func TestUpdatePersonGivesUpOnALockedRow(t *testing.T) {
 	if stored != 20 {
 		t.Errorf("stored weekly_hours = %v, want the seeded 20", stored)
 	}
+	if !strings.Contains(logs.String(), "update person 3: gave up") {
+		t.Errorf("the failure was not logged; log output: %q", logs.String())
+	}
+}
+
+// A 500 must leave a trace in `make logs`; the client only gets a generic message.
+func TestCapacityLogsWhyItFailed(t *testing.T) {
+	s := testServer(t)
+	logs := captureLog(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the query fails at once
+	req := httptest.NewRequest("GET", "/api/capacity?from=2026-01-05&to=2026-01-11", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	s.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status %d, want 500", rec.Code)
+	}
+	if !strings.Contains(logs.String(), "load capacity 2026-01-05..2026-01-05") {
+		t.Errorf("the failure was not logged; log output: %q", logs.String())
+	}
+}
+
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	return &buf
 }

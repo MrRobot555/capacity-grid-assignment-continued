@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -11,14 +12,15 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // maxWeeklyHours is every hour of a week. Anything above it is a typo, not a
 // contract.
 const maxWeeklyHours = 168
 
-// updateTimeout bounds how long a save waits on the database, e.g. behind a row
-// lock held elsewhere. The client waits longer (SAVE_TIMEOUT_MS in web/src/api.ts),
+// updateTimeout bounds how long a save may take in the database, e.g. waiting
+// behind a row lock held elsewhere. The client waits longer (SAVE_TIMEOUT_MS in web/src/api.ts),
 // so when the server gives up first the manager gets a definite "not saved".
 var updateTimeout = 10 * time.Second
 
@@ -64,20 +66,13 @@ func (s *server) handleUpdatePerson(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), updateTimeout)
-	defer cancel()
-
-	var p person
-	err = s.db.QueryRow(ctx, `
-		UPDATE people SET weekly_hours = $2
-		WHERE id = $1
-		RETURNING id, name, weekly_hours::float8`, id, hours).
-		Scan(&p.ID, &p.Name, &p.WeeklyHours)
+	p, err := s.updateWeeklyHours(r.Context(), int(id), hours)
+	var pgErr *pgconn.PgError
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "person not found")
 		return
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
+	if errors.As(err, &pgErr) && pgErr.Code == "57014" { // query_canceled: statement_timeout
 		log.Printf("update person %d: gave up after %v: %v", id, updateTimeout, err)
 		writeError(w, http.StatusServiceUnavailable, "the database didn't respond in time")
 		return
@@ -89,4 +84,33 @@ func (s *server) handleUpdatePerson(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, p)
+}
+
+// updateWeeklyHours stores the value and returns the row as stored.
+//
+// The time limit is enforced by Postgres (statement_timeout, for this
+// transaction only), not by a Go context deadline. A deadline only makes Go
+// stop waiting: an UPDATE queued behind a row lock would still run and commit
+// once the lock was released, after we had answered "not saved". When Postgres
+// cancels the statement instead, the transaction is aborted and nothing is stored.
+func (s *server) updateWeeklyHours(ctx context.Context, id int, hours float64) (person, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return person{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	timeout := fmt.Sprintf("%dms", updateTimeout.Milliseconds())
+	if _, err := tx.Exec(ctx, `SELECT set_config('statement_timeout', $1, true)`, timeout); err != nil {
+		return person{}, err
+	}
+	var p person
+	if err := tx.QueryRow(ctx, `
+		UPDATE people SET weekly_hours = $2
+		WHERE id = $1
+		RETURNING id, name, weekly_hours::float8`, id, hours).
+		Scan(&p.ID, &p.Name, &p.WeeklyHours); err != nil {
+		return person{}, err
+	}
+	return p, tx.Commit(ctx)
 }

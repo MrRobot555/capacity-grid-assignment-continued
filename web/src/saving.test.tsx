@@ -80,6 +80,14 @@ describe('what a failed save says', () => {
     expect(patches()[0][1]?.signal).toBeInstanceOf(AbortSignal)
   })
 
+  it('gives a save 15 seconds, longer than the API gives the database (10 s)', async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout')
+    setup(async () => json(200, { id: 4, name: 'Dee Okafor', weeklyHours: 50 }))
+    await saveDee('50')
+    await waitFor(() => expect(timeout).toHaveBeenCalledWith(15_000))
+    timeout.mockRestore()
+  })
+
   it('names the timeout and lets the manager cancel afterwards', async () => {
     setup(() => Promise.reject(new DOMException('signal timed out', 'TimeoutError')))
     await saveDee('50')

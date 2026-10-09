@@ -91,3 +91,9 @@ left unfinished. Append as you go; a line or two per entry is right.
   - a failed save whose row is scrolled away or filtered out shows a banner with "Show";
   - date fields keep what you type and apply it after a pause, on Enter or when focus leaves.
 - Not done: round 2, and one flaky browser test (R1-X1).
+
+## After submission (local branch `post-submission`, not pushed)
+
+- The "flaky" browser test was a real bug. A Go context deadline doesn't stop Postgres: an UPDATE waiting behind a row lock committed after the API had already answered 503 "Not saved". The Go locked-row test sometimes left Cem at 21, so the browser suite, run right after it, failed. Fixed by letting Postgres enforce the limit (`statement_timeout`, set for the save's transaction only): when it cancels the statement, the transaction aborts and nothing is stored. The test now waits 500 ms after releasing the lock before checking. It failed 2/3 runs on the old code and passed 5/5 on the fix.
+- Lesson: "flaky" was the wrong word. Each failure was one run's leftover state breaking the next run's precondition. The clue was in the trace: Cem was at 21 *before* the browser test started.
+- Also closed my round-1 caveats, each with a test that fails on the old code. Running the hanging test against the old handler needed `go test -timeout`: killing its container released the lock and committed the abandoned save. I restored Cem and diffed every person against `db/seed.sql` afterwards.

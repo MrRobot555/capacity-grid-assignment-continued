@@ -48,9 +48,11 @@ just the reported line), REJECTED (with a reason), FOLLOWUP (real, but out of sc
 | R1-G9 | 1 | Low | No Go test with a Sunday `from` (G10 survives) | RESOLVED | api_test.go |
 | R1-G10 | 1 | Low | Save test mock echoes the typed value, so "grid uses the server's value" is not distinguished (U4 survives) | RESOLVED | CapacityGrid.test.tsx |
 | R1-G11 | 1 | Low | Untested: unchanged value sends no PATCH, summary hidden while an old range is shown, first-load skeleton (C15, C18, C19) | RESOLVED | mutation log |
-| R1-X1 | 1 | Low | One run of the 25 browser tests reported 24 passed, the next 25 passed. A flaky test, not yet identified | OPEN | found while verifying the round-1 fixes; out of time |
+| R1-X1 | 1 | **High** (was Low) | The "flaky" browser test was a real bug. The API's save timeout was a Go context deadline, which only stops Go waiting: an UPDATE queued behind a row lock still committed once the lock was released, after the API had answered 503 "Not saved". The Go locked-row test therefore sometimes left Cem at 21, and the browser suite, run right after it, failed its "Cem starts at 20" check | RESOLVED | Reproduced 2/3 by waiting 500 ms after releasing the lock. Fix: the limit is now Postgres's own `statement_timeout`, inside a transaction, so a timeout aborts the transaction. 5/5 green, and Go then e2e twice: 26/26 |
 
-**Round 1 status:** all 21 findings fixed. Each fix has a test that fails on the pre-fix code (checked by swapping the old source back in), except the coverage-only gaps (G1 404, G5, G6, G11, filter), which pin behaviour that was already right. Go 9, Vitest 60 and Playwright 25 pass, and the build passes. **The cycle is not closed:** round 2 (a re-review of these fixes) was not run, and R1-X1 is open.
+| R1-C1 | 1 | Low | My own caveats from round 1, now closed. The 17px row test is shown to fail without the row measurement. A test checks the save timeout is 15 s, not just that a timer exists. A browser test covers scrolling back to an open editor (focus is not taken). Go tests check that 500s and timeouts are logged. Each fails on the pre-round-1 code | RESOLVED | post-submission branch |
+
+**Round 1 status:** all 21 findings fixed. Each fix has a test that fails on the pre-fix code (checked by swapping the old source back in), except the coverage-only gaps (G1 404, G5, G6, G11, filter), which pin behaviour that was already right. Go 9, Vitest 60 and Playwright 25 pass, and the build passes. **The cycle is not closed:** round 2 (a re-review of these fixes) is next. (R1-X1 has since been found and fixed on the local `post-submission` branch.)
 
 ## Follow-ups (out of scope)
 

@@ -204,3 +204,22 @@ test("while a save is in flight, other people's capacity buttons are disabled", 
   await expect(capButton(page, DEE.name)).toHaveText('50h')
   await expect(capButton(page, 'Bo Lindqvist')).toBeEnabled()
 })
+
+// The editor used to autoFocus, which fired again whenever its virtualised row
+// remounted: scrolling back pulled focus out of wherever the manager was typing.
+test('scrolling back to an open editor does not take focus', async ({ page }) => {
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  await openEditor(page, 'Ana Ferreira')
+  const search = page.getByLabel('Find person')
+  await search.focus()
+
+  const scroller = page.locator('.scroller')
+  await scroller.evaluate((el) => (el.scrollTop = 6000))
+  await expect(editorInput(page, 'Ana Ferreira')).toHaveCount(0) // her row is out of the window
+  await scroller.evaluate((el) => (el.scrollTop = 0))
+  await expect(editorInput(page, 'Ana Ferreira')).toBeVisible()
+
+  await expect(search).toBeFocused()
+  await page.keyboard.type('dee')
+  await expect(search).toHaveValue('dee')
+})
