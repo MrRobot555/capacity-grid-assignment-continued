@@ -95,7 +95,7 @@ func (s *server) handleUpdatePerson(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "weeklyHours must be between 0 and 168")
 		return
 	}
-	version, ok := parseIfMatch(r.Header.Values("If-Match"))
+	versions, ok := parseIfMatch(r.Header.Values("If-Match"))
 	if !ok {
 		writeError(w, http.StatusBadRequest, `If-Match must be "<version>" or *`)
 		return
@@ -106,7 +106,7 @@ func (s *server) handleUpdatePerson(w http.ResponseWriter, r *http.Request) {
 	// (updateTimeout), so a stuck UPDATE gets Postgres's definite answer first.
 	ctx, cancel := context.WithTimeout(r.Context(), saveDeadline())
 	defer cancel()
-	p, err := s.updateWeeklyHours(ctx, int(id), hours, version)
+	p, err := s.updateWeeklyHours(ctx, int(id), hours, versions)
 	if err != nil {
 		log.Printf("update person %d: %v", id, err)
 		status, body := saveErrorResponse(err)
@@ -116,15 +116,15 @@ func (s *server) handleUpdatePerson(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, p)
 }
 
-// updateWeeklyHours stores the value and returns the row as stored. With a
-// version, it stores only if the row is still at that version.
+// updateWeeklyHours stores the value and returns the row as stored. With
+// versions (If-Match), it stores only if the row is at one of them.
 //
 // The time limit is enforced by Postgres (statement_timeout, for this
 // transaction only), not by a Go context deadline. A deadline only makes Go
 // stop waiting: an UPDATE queued behind a row lock would still run and commit
 // once the lock was released, after we had answered "not saved". When Postgres
 // cancels the statement instead, the transaction is aborted and nothing is stored.
-func (s *server) updateWeeklyHours(ctx context.Context, id int, hours float64, version string) (person, error) {
+func (s *server) updateWeeklyHours(ctx context.Context, id int, hours float64, versions []string) (person, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return person{}, err
@@ -138,10 +138,10 @@ func (s *server) updateWeeklyHours(ctx context.Context, id int, hours float64, v
 	var p person
 	err = tx.QueryRow(ctx, `
 		UPDATE people SET weekly_hours = $2
-		WHERE id = $1 AND ($3 = '' OR xmin::text = $3)
-		RETURNING id, name, weekly_hours::float8, xmin::text`, id, hours, version).
+		WHERE id = $1 AND ($3::text[] IS NULL OR xmin::text = ANY($3))
+		RETURNING id, name, weekly_hours::float8, xmin::text`, id, hours, versions).
 		Scan(&p.ID, &p.Name, &p.WeeklyHours, &p.Version)
-	if errors.Is(err, pgx.ErrNoRows) && version != "" {
+	if errors.Is(err, pgx.ErrNoRows) && versions != nil {
 		// Either there is no such person, or the row has moved on.
 		var current person
 		if err := tx.QueryRow(ctx, `
@@ -203,23 +203,33 @@ func saveErrorResponse(err error) (int, map[string]any) {
 	}
 }
 
-// parseIfMatch reads the version a save is conditional on. No header, or *,
-// means unconditional ("" back): * matches any existing row, as in HTTP. A
-// weak tag (W/"…") is compared like a strong one: a row has one version. An
-// empty tag is refused, so a client that lost track of a version can't
-// silently fall back to last-write-wins.
-func parseIfMatch(values []string) (string, bool) {
+// parseIfMatch reads the versions a save is conditional on, as HTTP's If-Match:
+// a list of quoted tags, over one or more header lines; it matches if any
+// does. No header, or *, means unconditional (nil back): * matches any
+// existing row. Weak tags (W/"…") compare like strong ones: a row has one
+// version. An empty tag, or a list with nothing in it, is refused, so a client
+// that lost track of a version can't silently fall back to last-write-wins.
+func parseIfMatch(values []string) ([]string, bool) {
 	if len(values) == 0 {
-		return "", true
+		return nil, true
 	}
-	tag := strings.TrimSpace(values[0])
-	if tag == "*" {
-		return "", true
+	var versions []string
+	for _, line := range values {
+		for _, tag := range strings.Split(line, ",") {
+			tag = strings.TrimSpace(tag)
+			if tag == "*" {
+				return nil, true
+			}
+			tag = strings.TrimPrefix(tag, "W/")
+			if len(tag) < 2 || !strings.HasPrefix(tag, `"`) || !strings.HasSuffix(tag, `"`) {
+				return nil, false
+			}
+			version := strings.TrimSpace(tag[1 : len(tag)-1])
+			if version == "" {
+				return nil, false
+			}
+			versions = append(versions, version)
+		}
 	}
-	tag = strings.TrimPrefix(tag, "W/")
-	if len(tag) < 2 || !strings.HasPrefix(tag, `"`) || !strings.HasSuffix(tag, `"`) {
-		return "", false
-	}
-	tag = strings.TrimSpace(tag[1 : len(tag)-1])
-	return tag, tag != ""
+	return versions, len(versions) > 0
 }

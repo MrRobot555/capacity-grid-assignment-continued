@@ -45,19 +45,24 @@ func main() {
 
 	s := newServer(db)
 
-	// The scaffold used http.ListenAndServe, which has no timeouts: a client
-	// that sends headers slowly holds a connection open for ever. WriteTimeout
-	// must outlast the longest handler, a save (saveDeadline, 12 s).
-	srv := &http.Server{
+	srv := newHTTPServer(s.routes())
+	log.Println("listening on :8080")
+	log.Fatal(srv.ListenAndServe())
+}
+
+// newHTTPServer serves h on :8080 with timeouts. The scaffold used
+// http.ListenAndServe, which has none: a client that sends headers slowly
+// holds a connection open for ever. WriteTimeout must outlast the longest
+// handler, a save (saveDeadline, 12 s); TestServerTimeoutsOutlastASave pins it.
+func newHTTPServer(h http.Handler) *http.Server {
+	return &http.Server{
 		Addr:              ":8080",
-		Handler:           s.routes(),
+		Handler:           h,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-	log.Println("listening on :8080")
-	log.Fatal(srv.ListenAndServe())
 }
 
 func (s *server) routes() http.Handler {

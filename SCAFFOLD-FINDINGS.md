@@ -37,7 +37,7 @@ all of it with the version the rows already have:
   as each person's `version`;
 - **a save sends it back** (`If-Match`), and the `UPDATE` applies only if the
   row is still at that version. Otherwise the API answers **412 with the
-  current row**;
+  current row** and its real version, which a deliberate re-save can use;
 - **a lost answer is settled by repeating the identical request.** If the first
   attempt never landed, the repeat applies. If it did, the repeat meets the
   version it produced and gets the current row back, which holds our value.
@@ -150,7 +150,7 @@ day-by-day oracle (`TestCapacityMatchesDayByDayOracle`).
 
 ---
 
-*How these were found:* data probing before any code, then six rounds of
+*How these were found:* data probing before any code, then eight rounds of
 review by two independent reviewers (one adversarial with reproductions, one
 auditing the tests by mutation), each finding recorded with a verdict in
 `.notes/review-register.md`.

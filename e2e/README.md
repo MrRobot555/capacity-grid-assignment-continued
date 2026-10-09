@@ -14,5 +14,7 @@ npx playwright install chromium   # only if the browser is not cached yet
 npx playwright test               # add --reporter=list for a plain log
 ```
 
-Tests run serially (one worker). All saves are mocked except one round trip on
-Cem Aydin (id 3), which restores his weekly hours to 20 afterwards.
+Tests run serially (one worker), against the live database. Most saves are
+mocked; the tests that write for real all use Cem Aydin (id 3) and restore his
+weekly hours to 20 afterwards: the real save round trip, the two lost-answer
+tests and the stale-view test in `editing.spec.ts`.

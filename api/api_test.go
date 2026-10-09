@@ -210,6 +210,7 @@ func TestUpdatePerson(t *testing.T) {
 // so the server's "not saved" is what the manager sees.
 func TestUpdatePersonGivesUpOnALockedRow(t *testing.T) {
 	s := testServer(t)
+	t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -292,6 +293,7 @@ func TestCommitOutcome(t *testing.T) {
 // The save path's own 500 must leave a trace in the log, like the capacity one.
 func TestUpdatePersonLogsWhyItFailed(t *testing.T) {
 	s := testServer(t)
+	t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
 	logs := captureLog(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -303,6 +305,24 @@ func TestUpdatePersonLogsWhyItFailed(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "update person 3:") {
 		t.Errorf("the failure was not logged; log output: %q", logs.String())
+	}
+}
+
+func TestUpdatePersonAcceptsZero(t *testing.T) {
+	s := testServer(t)
+	t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
+	if rec := do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 0}`); rec.Code != http.StatusOK || storedHours(t, s, 3) != 0 {
+		t.Errorf("0 h (someone on leave, like the seeded Eli) must be accepted: status %d", rec.Code)
+	}
+}
+
+func TestServerTimeoutsOutlastASave(t *testing.T) {
+	srv := newHTTPServer(http.NotFoundHandler())
+	if srv.WriteTimeout <= saveDeadline() {
+		t.Errorf("WriteTimeout %v must outlast the save deadline %v, or a slow save's answer is cut off", srv.WriteTimeout, saveDeadline())
+	}
+	if srv.ReadHeaderTimeout <= 0 || srv.IdleTimeout <= 0 {
+		t.Error("the server must time out slow headers and idle connections")
 	}
 }
 
@@ -442,8 +462,8 @@ func TestSaveOnAStaleVersionIsRefused(t *testing.T) {
 	if first.Code != http.StatusOK {
 		t.Fatalf("first: %d %s", first.Code, first.Body)
 	}
-	if got := decodeBody(t, first)["version"]; got == v || got == "" {
-		t.Errorf("version after a save = %v; it must change", got)
+	if got := decodeBody(t, first)["version"]; got != versionOf(t, s, 3) || got == v {
+		t.Errorf("version after a save = %v, want the row's new xmin %s", got, versionOf(t, s, 3))
 	}
 
 	second := patchIfMatch(t, s, "3", v, `{"weeklyHours": 30}`)
@@ -451,11 +471,17 @@ func TestSaveOnAStaleVersionIsRefused(t *testing.T) {
 	if second.Code != http.StatusPreconditionFailed || body["stored"] != nil {
 		t.Fatalf("second: %d %v, want a definite 412", second.Code, body)
 	}
-	if current, _ := body["current"].(map[string]any); current == nil || current["weeklyHours"] != 24.0 || current["version"] == "" {
-		t.Errorf("412 current = %v, want the row with 24 and its version", current)
+	current, _ := body["current"].(map[string]any)
+	if current == nil || current["weeklyHours"] != 24.0 || current["version"] != versionOf(t, s, 3) {
+		t.Fatalf("412 current = %v, want the row with 24 and its real version %s", current, versionOf(t, s, 3))
 	}
 	if h := storedHours(t, s, 3); h != 24 {
 		t.Errorf("stored %v, want 24 (the stale save must not land)", h)
+	}
+	// The 412's version is the one to save on: a deliberate re-save with it lands.
+	again := patchIfMatch(t, s, "3", current["version"].(string), `{"weeklyHours": 30}`)
+	if again.Code != http.StatusOK || storedHours(t, s, 3) != 30 {
+		t.Errorf("re-save on the 412's version: %d %s, stored %v; want 200 and 30", again.Code, again.Body, storedHours(t, s, 3))
 	}
 }
 
@@ -483,10 +509,17 @@ func TestCapacityCarriesEachPersonsVersion(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatal(err)
 	}
+	found := false
 	for _, p := range resp.People {
-		if p["id"] == 3.0 && p["version"] != versionOf(t, s, 3) {
-			t.Errorf("person 3's version = %v, want the row's xmin %s", p["version"], versionOf(t, s, 3))
+		if p["id"] == 3.0 {
+			found = true
+			if p["version"] != versionOf(t, s, 3) {
+				t.Errorf("person 3's version = %v, want the row's xmin %s", p["version"], versionOf(t, s, 3))
+			}
 		}
+	}
+	if !found {
+		t.Fatal("person 3 is missing from the response")
 	}
 }
 
@@ -631,6 +664,7 @@ func TestSaveDeadlineChain(t *testing.T) {
 // with a definite "not saved" instead of waiting for ever.
 func TestUpdatePersonGivesUpWaitingForAConnection(t *testing.T) {
 	s := testServer(t)
+	t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
 	cfg, err := pgxpool.ParseConfig(os.Getenv("DATABASE_URL"))
 	if err != nil {
 		t.Fatal(err)
@@ -690,23 +724,38 @@ func TestHealthDoesNotLeakDatabaseErrors(t *testing.T) {
 
 func TestIfMatchIsReadAsInHTTP(t *testing.T) {
 	for _, tc := range []struct {
-		header  []string
-		version string
-		ok      bool
+		header   []string
+		versions []string
+		ok       bool
 	}{
-		{nil, "", true},           // no header: unconditional
-		{[]string{"*"}, "", true}, // any existing row
-		{[]string{`"812"`}, "812", true},
-		{[]string{`W/"812"`}, "812", true},
-		{[]string{` "812" `}, "812", true},
-		{[]string{`""`}, "", false}, // an empty version must not mean "unconditional"
-		{[]string{`" "`}, "", false},
-		{[]string{`812`}, "", false}, // not a quoted tag
+		{nil, nil, true},           // no header: unconditional
+		{[]string{"*"}, nil, true}, // any existing row
+		{[]string{`"812"`}, []string{"812"}, true},
+		{[]string{`W/"812"`}, []string{"812"}, true},
+		{[]string{` "812" `}, []string{"812"}, true},
+		{[]string{`"999", "812"`}, []string{"999", "812"}, true},   // a list: any may match
+		{[]string{`"999"`, `"812"`}, []string{"999", "812"}, true}, // over several lines
+		{[]string{`""`}, nil, false},                               // an empty version must not mean "unconditional"
+		{[]string{`" "`}, nil, false},
+		{[]string{`812`}, nil, false}, // not a quoted tag
+		{[]string{``}, nil, false},
 	} {
-		version, ok := parseIfMatch(tc.header)
-		if version != tc.version || ok != tc.ok {
-			t.Errorf("If-Match %q: got (%q, %v), want (%q, %v)", tc.header, version, ok, tc.version, tc.ok)
+		versions, ok := parseIfMatch(tc.header)
+		if !reflect.DeepEqual(versions, tc.versions) || ok != tc.ok {
+			t.Errorf("If-Match %q: got (%q, %v), want (%q, %v)", tc.header, versions, ok, tc.versions, tc.ok)
 		}
+	}
+}
+
+func TestIfMatchListMatchesAnyVersion(t *testing.T) {
+	s := testServer(t)
+	t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
+	req := httptest.NewRequest("PATCH", "/api/people/3", strings.NewReader(`{"weeklyHours": 22}`))
+	req.Header.Set("If-Match", `"999999999", "`+versionOf(t, s, 3)+`"`)
+	rec := httptest.NewRecorder()
+	s.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("status %d %s, want 200: one tag in the list is the current version", rec.Code, rec.Body)
 	}
 }
 
@@ -714,6 +763,7 @@ func TestIfMatchIsReadAsInHTTP(t *testing.T) {
 // 404 on that path too, not as a "changed" row.
 func TestUnknownPersonIsNotFoundWithIfMatch(t *testing.T) {
 	s := testServer(t)
+	t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
 	if rec := patchIfMatch(t, s, "999999", "1", `{"weeklyHours": 10}`); rec.Code != http.StatusNotFound {
 		t.Errorf("status %d %s, want 404", rec.Code, rec.Body)
 	}

@@ -96,3 +96,20 @@ test(`virtualised rows (${fontSize} font): the right person at the bottom and mi
   expect(mid.rows.map((r) => r.name)).toEqual(names.slice(firstIdx, firstIdx + mid.rows.length))
 })
 }
+
+// A tall window: the visible height must be measured, not assumed, or rows
+// below the first ~800 px are never rendered and a blank band appears.
+test.describe('in a tall window', () => {
+  test.use({ viewport: { width: 1280, height: 1800 } })
+
+  test('rows fill the whole visible height of the grid', async ({ page }) => {
+    await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+    await expect(personRows(page).first()).toBeVisible()
+    const gap = await page.locator('.scroller').evaluate((el) => {
+      const visibleBottom = el.getBoundingClientRect().top + el.clientHeight
+      const rows = [...el.querySelectorAll('tbody tr:not(.spacer)')]
+      return visibleBottom - rows[rows.length - 1].getBoundingClientRect().bottom
+    })
+    expect(gap, 'blank space between the last rendered row and the bottom of the grid').toBeLessThanOrEqual(0)
+  })
+})

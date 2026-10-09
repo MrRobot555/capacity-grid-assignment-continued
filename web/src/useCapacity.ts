@@ -10,22 +10,21 @@ export const retryTiming = { delay: (attempt: number) => 1000 * 2 ** (attempt - 
 
 /**
  * What a save came to. An outcome belongs to the save, not to one request:
- * after any attempt whose outcome was unknown (or while an earlier save of the
- * person is unknown), a later request's definite answer says only what *that
- * request* did, so it can't settle the save. Only a 200, or a 412 showing our
- * value, can.
+ * once an attempt's outcome is unknown, a later request's definite answer says
+ * only what *that request* did, so it can't settle the save. Only a 200, or a
+ * 412 showing our value, can.
  *  - ok: stored (or found already holding our value);
- *  - changed: the server holds another value now (`current`, already applied).
- *    `mayHaveLanded`: an earlier attempt of ours may have been stored before
- *    that change, so this is not a "not saved";
- *  - error, unconfirmed false: refused for certain, and nothing earlier is
- *    unknown, so nothing was stored;
- *  - error, unconfirmed true: no definite answer about the save.
+ *  - changed: the server holds another value now (`changed`, already applied).
+ *    `uncertain`: an attempt of this save may have been stored before that.
+ *    `earlier`: the value of an earlier, still-doubtful save of this person on
+ *    the same version, which may be what the server now holds;
+ *  - error, unconfirmed false: this save was refused for certain;
+ *  - error, unconfirmed true: no definite answer about this save.
  */
 export type SaveResult =
   | { ok: true }
-  | { ok: false; changed: Person; mayHaveLanded: boolean }
-  | { ok: false; error: unknown; unconfirmed: boolean }
+  | { ok: false; changed: Person; uncertain: boolean; earlier?: number }
+  | { ok: false; error: unknown; unconfirmed: boolean; earlier?: number }
 
 export function useCapacity(from: ISODate, to: ISODate) {
   const [state, dispatch] = useReducer(capacityReducer, initialState)
@@ -78,8 +77,12 @@ export function useCapacity(from: ISODate, to: ISODate) {
       // sent it back (412): one way to apply it, ordered against loads.
       const confirmWith = (person: Person) =>
         dispatch({ type: 'saveConfirmed', person, confirmedAt: ++clock.current })
-      // Unknown so far: an earlier save of this person, or an attempt of this one.
-      let uncertain = unsure.current[id] !== undefined
+      // An earlier save of this person, on this same version, whose outcome is
+      // unknown: it may be what the server holds by the time we get there.
+      const doubt = unsure.current[id]
+      const earlier = doubt?.version === version ? doubt.value : undefined
+      // Whether an attempt of *this* save has had an unknown outcome.
+      let uncertain = false
       for (let attempt = 1; ; attempt++) {
         try {
           confirmWith(await updateWeeklyHours(id, weeklyHours, version))
@@ -88,20 +91,20 @@ export function useCapacity(from: ISODate, to: ISODate) {
           if (error instanceof ApiError && error.current) {
             confirmWith(error.current)
             if (error.current.weeklyHours === weeklyHours) return { ok: true }
-            return { ok: false, changed: error.current, mayHaveLanded: uncertain }
+            return { ok: false, changed: error.current, uncertain, earlier }
           }
           if (isDefiniteFailure(error)) {
-            if (!uncertain) return { ok: false, error, unconfirmed: false }
-            // This request stored nothing, but an earlier attempt may have.
-            dispatch({ type: 'saveGaveUp', id })
+            if (!uncertain) return { ok: false, error, unconfirmed: false, earlier }
+            // This request stored nothing, but an earlier attempt of the save may have.
+            dispatch({ type: 'saveGaveUp', id, version, value: weeklyHours })
             return { ok: false, error, unconfirmed: true }
           }
           uncertain = true
           if (attempt >= SAVE_ATTEMPTS || !mounted.current) {
-            dispatch({ type: 'saveGaveUp', id })
+            dispatch({ type: 'saveGaveUp', id, version, value: weeklyHours })
             return { ok: false, error, unconfirmed: true }
           }
-          dispatch({ type: 'saveRetrying', id })
+          dispatch({ type: 'saveRetrying', id, version, value: weeklyHours })
           await new Promise((r) => setTimeout(r, retryTiming.delay(attempt)))
         }
       }

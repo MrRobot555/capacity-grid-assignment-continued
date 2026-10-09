@@ -62,7 +62,7 @@ export function capacityView(weeklyHours: number, certainty: Certainty): Capacit
 }
 
 export function certaintyOf(state: Pick<State, 'unsure'>, id: number): Certainty {
-  return state.unsure[id] ?? 'certain'
+  return state.unsure[id]?.state ?? 'certain'
 }
 
 export function allocationStatus(allocated: number, capacity: number): Status {
@@ -81,11 +81,13 @@ export type Loaded = {
 }
 
 /**
- * Doubt about one person's capacity. 'unknown' is cleared only by a confirmed
- * save of that person: a load can't, because a lost attempt may still arrive.
- * (If-Match means it can't overwrite anything newer when it does.)
+ * Doubt about one person's capacity: a save of `value`, sent on `version`
+ * (If-Match), whose outcome we don't know. Under If-Match that save can only
+ * ever land while the row is still at `version`. So the doubt ends as soon as
+ * the row is seen at any other version (a load, a 412, a confirmed save): that
+ * save can no longer land, and what is shown is the truth.
  */
-type Unsure = 'retrying' | 'unknown'
+type Unsure = { state: 'retrying' | 'unknown'; version: string; value: number }
 
 export type State = {
   /** The range the grid is asking for. */
@@ -109,8 +111,8 @@ export type Action =
   /** The server's row after a save: what it stored (200), or what it holds
    * now (412). Either is fresh, so it is applied. */
   | { type: 'saveConfirmed'; person: Person; confirmedAt: number }
-  | { type: 'saveRetrying'; id: number }
-  | { type: 'saveGaveUp'; id: number }
+  | { type: 'saveRetrying'; id: number; version: string; value: number }
+  | { type: 'saveGaveUp'; id: number; version: string; value: number }
 
 export const initialState: State = {
   requestedKey: null,
@@ -148,11 +150,17 @@ export function capacityReducer(state: State, action: Action): State {
         const keepLocal = confirmed !== undefined && confirmed > action.issuedAt && p.id in people
         people[p.id] = keepLocal ? people[p.id] : { name: p.name, weeklyHours: p.weeklyHours, version: p.version }
       }
+      // A row seen at another version than a doubtful save was sent on: that
+      // save can no longer land, so the doubt is over.
+      const unsure = Object.fromEntries(
+        Object.entries(state.unsure).filter(([id, u]) => people[Number(id)]?.version === u.version),
+      )
       return {
         ...state,
         loading: false,
         error: null,
         people,
+        unsure,
         data: {
           key: action.key,
           weeks: action.response.weeks,
@@ -178,10 +186,11 @@ export function capacityReducer(state: State, action: Action): State {
     }
 
     case 'saveRetrying':
-      return { ...state, unsure: { ...state.unsure, [action.id]: 'retrying' } }
-
-    case 'saveGaveUp':
-      return { ...state, unsure: { ...state.unsure, [action.id]: 'unknown' } }
+    case 'saveGaveUp': {
+      const { id, version, value } = action
+      const doubt: Unsure = { state: action.type === 'saveRetrying' ? 'retrying' : 'unknown', version, value }
+      return { ...state, unsure: { ...state.unsure, [id]: doubt } }
+    }
   }
 }
 

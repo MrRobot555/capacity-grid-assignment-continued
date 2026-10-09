@@ -227,7 +227,7 @@ describe('when the row changed on the server', () => {
     await edit('Dee Okafor', '50')
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Not saved: the weekly hours were changed on the server since you loaded them (now 30h)',
+      'Not saved: the weekly hours on the server were changed since you loaded them (now 30h)',
     )
     expect(server.hours[4]).toBe(30)
     expect(capButton('Dee Okafor')).toHaveTextContent(/^30h$/)
@@ -252,9 +252,10 @@ describe('when the row changed on the server', () => {
     })
     await edit('Dee Okafor', '50')
     const alert = await screen.findByRole('alert')
-    expect(alert).toHaveTextContent('Someone else changed the weekly hours on the server (now 30h)')
-    expect(alert).toHaveTextContent('your earlier attempt may have been stored before that')
+    expect(alert).toHaveTextContent('changed since you loaded them (now 30h)')
+    expect(alert).toHaveTextContent('your attempt may have been stored before that')
     expect(alert).not.toHaveTextContent('Not saved')
+    expect(alert).not.toHaveTextContent('someone else')
     expect(server.hours[4]).toBe(30)
     expect(capButton('Dee Okafor')).toHaveTextContent(/^30h$/)
   })
@@ -274,7 +275,7 @@ describe('when the row changed on the server', () => {
     await edit('Dee Okafor', '50')
     const alert = await screen.findByRole('alert')
     expect(alert).not.toHaveTextContent('Not saved')
-    expect(alert).toHaveTextContent('your earlier attempt may have been stored')
+    expect(alert).toHaveTextContent('your attempt may have been stored')
     expect(capButton('Dee Okafor')).toHaveTextContent(/^30h$/)
   })
 
@@ -286,7 +287,7 @@ describe('when the row changed on the server', () => {
     server.changeElsewhere(4, 40)
     await edit('Dee Okafor', '45')
     const alert = await screen.findByRole('alert')
-    expect(alert).toHaveTextContent('someone else saved these weekly hours meanwhile (still 40h)')
+    expect(alert).toHaveTextContent('saved again since you loaded them (still 40h)')
     expect(alert).not.toHaveTextContent('were changed')
   })
 })
@@ -298,12 +299,6 @@ describe('when a repeat is refused after an unknown outcome', () => {
   it('says the save could not be confirmed, and the "?" says so too', async () => {
     const server = fakeServer(['store-and-lose-answer', 'refuse'])
     renderGrid()
-    await screen.findByText('Dee Okafor', { selector: 'th' })
-    const original = vi.mocked(fetch).getMockImplementation()!
-    vi.mocked(fetch).mockImplementation(async (url, init) =>
-      // Keep the grid from reloading the stored 50 meanwhile.
-      init?.method === 'PATCH' ? original(url, init) : new Response('<html>Bad Gateway</html>', { status: 502 }),
-    )
     await edit('Dee Okafor', '50')
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent("Couldn't confirm the save")
@@ -510,5 +505,74 @@ describe('focus when the editor closes', () => {
     fireEvent.click(await screen.findByLabelText('Only over capacity'))
     await edit('Dee Okafor', '50') // 45 of 50 is no longer over: her row leaves the list
     await waitFor(() => expect(screen.getByRole('region', { name: 'Capacity by person and week' })).toHaveFocus())
+  })
+})
+
+// Doubt left by an earlier save is data: the version and value it was sent
+// with. The next save is told what became of it, without guessing who.
+describe('after an earlier save of the person was left unconfirmed', () => {
+  it("says the earlier save went through after all, not that someone else changed it", async () => {
+    // 50 is stored but every answer is lost; then the manager saves 20.
+    const server = fakeServer(['store-and-lose-answer', ...Array(SAVE_ATTEMPTS - 1).fill('no-answer')])
+    renderGrid()
+    await edit('Dee Okafor', '50')
+    await screen.findByText(/Couldn't confirm the save of 50h/)
+    await edit('Dee Okafor', '20')
+    const alert = await screen.findByText(/went through after all/)
+    expect(alert).toHaveTextContent('Not saved: your earlier save of 50h went through after all, so the weekly hours are 50h now.')
+    expect(alert).not.toHaveTextContent('someone else')
+    expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/) // the doubt is over: the row moved on
+    expect(server.hours[4]).toBe(50)
+  })
+
+  it('says a refused save was not saved, and that the earlier one is still unconfirmed', async () => {
+    fakeServer([...Array(SAVE_ATTEMPTS).fill('lose-request'), 'refuse'])
+    renderGrid()
+    await edit('Dee Okafor', '50')
+    await screen.findByText(/Couldn't confirm the save of 50h/)
+    await edit('Dee Okafor', '26')
+    const alert = await screen.findByText(/Not saved. could not update person/)
+    expect(alert).toHaveTextContent('Your earlier save of 50h is still unconfirmed.')
+    expect(alert).not.toHaveTextContent('may or may not')
+    expect(capButton('Dee Okafor')).toHaveTextContent('40h ?')
+  })
+
+  it('ends the doubt when a load shows the row at a new version', async () => {
+    const server = fakeServer(Array(SAVE_ATTEMPTS).fill('lose-request'))
+    const { rerender } = renderGrid()
+    await edit('Dee Okafor', '50')
+    await screen.findByText(/Couldn't confirm the save of 50h/)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(capButton('Dee Okafor')).toHaveTextContent('40h ?')
+
+    server.changeElsewhere(4, 30)
+    rerender(<CapacityGrid from="2026-01-12" to="2026-01-25" onRangeChange={() => {}} />)
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^30h$/))
+  })
+})
+
+describe('what the grid draws', () => {
+  it('fills the utilisation bar by allocated over capacity, and marks this week', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-01-07T12:00:00'))
+    fakeServer([])
+    renderGrid()
+    await screen.findByText('Ana Ferreira', { selector: 'th' })
+    // Ana: 30 allocated of 40 in the week of 12 Jan.
+    const anaCell = within(rowOf('Ana Ferreira')).getAllByRole('cell')[2]
+    expect(anaCell.style.getPropertyValue('--fill')).toBe('0.75')
+    expect(screen.getByRole('columnheader', { name: /5 Jan/ })).toHaveClass('current')
+    expect(screen.getByRole('columnheader', { name: /12 Jan/ })).not.toHaveClass('current')
+  })
+
+  it('says so when nobody matches, or nobody is over', async () => {
+    fakeServer([])
+    renderGrid()
+    await screen.findByText('Ana Ferreira', { selector: 'th' })
+    fireEvent.change(screen.getByLabelText('Find person'), { target: { value: 'zz' } })
+    expect(screen.getByText('Nobody matching “zz”.')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Find person'), { target: { value: 'ana' } })
+    fireEvent.click(screen.getByLabelText('Only over capacity'))
+    expect(screen.getByText('Nobody matching “ana” is over capacity in these weeks.')).toBeInTheDocument()
   })
 })

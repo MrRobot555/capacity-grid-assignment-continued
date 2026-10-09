@@ -147,9 +147,9 @@ describe('capacityReducer', () => {
     expect(state.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 50, version: 'v2' })
   })
 
-  it('keeps a person unsure through any load while a save is being retried or was given up', () => {
-    // A load can read the old value just before a lost save commits.
-    for (const doubt of [{ type: 'saveRetrying', id: 4 }, { type: 'saveGaveUp', id: 4 }] as Action[]) {
+  it('keeps a person unsure through a load that still shows the version the save was sent on', () => {
+    // At that version, a lost attempt of the save can still land.
+    for (const doubt of [{ type: 'saveRetrying', id: 4, version: 'v1', value: 50 }, { type: 'saveGaveUp', id: 4, version: 'v1', value: 50 }] as Action[]) {
       const state = run(
         doubt,
         { type: 'fetchStarted', key: 'A', issuedAt: 5 },
@@ -187,10 +187,22 @@ describe('capacityReducer', () => {
     expect(saved.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 50, version: 'v9' })
   })
 
+  it('ends the doubt when a load shows the row at another version', () => {
+    // Under If-Match the doubtful save can no longer land; the load is the truth.
+    const moved = { ...response(30), people: response(30).people.map((p) => (p.id === 4 ? { ...p, version: 'v7' } : p)) }
+    const state = run(
+      { type: 'saveGaveUp', id: 4, version: 'v1', value: 50 },
+      { type: 'fetchStarted', key: 'A', issuedAt: 5 },
+      { type: 'fetchSucceeded', key: 'A', issuedAt: 5, response: moved },
+    )
+    expect(certaintyOf(state, 4)).toBe('certain')
+    expect(state.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 30, version: 'v7' })
+  })
+
   it("keeps each person's doubt to themselves", () => {
     const state = run(
-      { type: 'saveRetrying', id: 4 },
-      { type: 'saveGaveUp', id: 1 },
+      { type: 'saveRetrying', id: 4, version: 'v1', value: 50 },
+      { type: 'saveGaveUp', id: 1, version: 'v1', value: 36 },
       // A confirmed save of Ana says nothing about Dee.
       { type: 'saveConfirmed', person: { id: 1, name: 'Ana Ferreira', weeklyHours: 36, version: 'v2' }, confirmedAt: 3 },
     )
@@ -199,7 +211,7 @@ describe('capacityReducer', () => {
   })
 
   it('clears "unknown" only with a confirmed save of that person', () => {
-    const gaveUp = run({ type: 'saveGaveUp', id: 4 })
+    const gaveUp = run({ type: 'saveGaveUp', id: 4, version: 'v1', value: 50 })
     expect(certaintyOf(gaveUp, 4)).toBe('unknown')
     const saved = capacityReducer(gaveUp, {
       type: 'saveConfirmed',

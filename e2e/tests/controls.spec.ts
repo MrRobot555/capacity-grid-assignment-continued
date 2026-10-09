@@ -124,3 +124,14 @@ test('leaving the field applies a typed date at once', async ({ page }) => {
   await to.blur()
   await expect(page).toHaveURL(/to=2026-02-01/, { timeout: 400 })
 })
+
+test('typing a From date before To extends the range back to it', async ({ page }) => {
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  const from = page.getByLabel('From', { exact: true })
+  await from.focus()
+  await page.keyboard.type('12152025')
+  await from.blur()
+  // Mon 15 Dec → the To date stays: 15 Dec to 18 Jan, 5 weeks.
+  await expectWeeks(page, ['15 Dec', '22 Dec', '29 Dec', '5 Jan', '12 Jan'])
+  await expect(page).toHaveURL(/from=2025-12-15&to=2026-01-18/)
+})

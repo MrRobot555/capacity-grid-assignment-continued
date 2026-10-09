@@ -349,11 +349,16 @@ test("a save on a stale view doesn't overwrite another manager's change", async 
     await editorInput(page, 'Cem Aydin').fill('24')
     await editorInput(page, 'Cem Aydin').press('Enter')
 
-    await expect(editorHint(page)).toContainText('changed on the server since you loaded them (now 26h)')
+    await expect(editorHint(page)).toContainText('changed since you loaded them (now 26h)')
     await expect(capButton(page, 'Cem Aydin')).toHaveText('26h')
     const res = await request.get(`/api/capacity?from=${FIXTURE.from}&to=${FIXTURE.to}`)
     const cem = ((await res.json()) as { people: { id: number; weeklyHours: number }[] }).people.find((p) => p.id === 3)
     expect(cem?.weeklyHours).toBe(26)
+
+    // Saving again is now a deliberate choice, made on the version the 412 sent: it lands.
+    await editorInput(page, 'Cem Aydin').press('Enter')
+    await expect(editor(page)).toHaveCount(0)
+    await expect(capButton(page, 'Cem Aydin')).toHaveText('24h')
   } finally {
     const res = await request.patch('/api/people/3', { data: { weeklyHours: 20 } })
     expect(res.status(), 'restoring Cem Aydin to 20h').toBe(200)

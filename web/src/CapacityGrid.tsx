@@ -150,10 +150,13 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
       }
       message =
         'changed' in result
-          ? changedMessage(result.changed.weeklyHours, loaded, result.mayHaveLanded)
+          ? changedMessage({ now: result.changed.weeklyHours, loaded, ...result })
           : result.unconfirmed
-            ? `Couldn't confirm the save, so the server may or may not hold it. Saving again is safe. (${errorText(result.error)})`
-            : `Not saved. ${errorText(result.error)}`
+            ? `Couldn't confirm the save of ${formatHours(hours)}h, so the server may or may not hold it. Saving again is safe. (${errorText(result.error)})`
+            : `Not saved. ${errorText(result.error)}` +
+              (result.earlier !== undefined
+                ? ` Your earlier save of ${formatHours(result.earlier)}h is still unconfirmed.`
+                : '')
     } catch (err) {
       // Anything unexpected must still end the save, or the editor would stay
       // at "Saving…" with every button locked.
@@ -510,19 +513,22 @@ function useSlow(key: number | null) {
   return key !== null && slowKey === key
 }
 
-/** What to say when the server holds another value than the one we sent. */
-function changedMessage(now: number, loaded: number, mayHaveLanded: boolean): string {
-  const nowText = `${formatHours(now)}h`
-  // An earlier attempt of ours may have been stored and then changed by
-  // someone else: "not saved" could be false.
-  if (mayHaveLanded) {
-    return `Someone else changed the weekly hours on the server (now ${nowText}); your earlier attempt may have been stored before that. Your value is kept here; save again to replace theirs.`
+/**
+ * What to say when the server holds another value than the one we sent. It
+ * states what the server holds and, when it can be known, whose save that
+ * was; it never claims "someone else" did it, because an earlier save of ours
+ * may have.
+ */
+function changedMessage(f: { now: number; loaded: number; uncertain: boolean; earlier?: number }): string {
+  const now = `${formatHours(f.now)}h`
+  if (f.earlier !== undefined && f.now === f.earlier && !f.uncertain) {
+    return `Not saved: your earlier save of ${now} went through after all, so the weekly hours are ${now} now. Your value is kept here; save again to apply it.`
   }
-  // The row was saved again elsewhere without changing the value.
-  if (now === loaded) {
-    return `Not saved: someone else saved these weekly hours meanwhile (still ${nowText}). Your value is kept here; save again to apply it.`
+  const what = f.now === f.loaded ? `saved again since you loaded them (still ${now})` : `changed since you loaded them (now ${now})`
+  if (f.uncertain) {
+    return `The weekly hours on the server were ${what}; your attempt may have been stored before that. Your value is kept here; save again to apply it.`
   }
-  return `Not saved: the weekly hours were changed on the server since you loaded them (now ${nowText}). Your value is kept here; save again to replace it.`
+  return `Not saved: the weekly hours on the server were ${what}. Your value is kept here; save again to apply it.`
 }
 
 function errorText(err: unknown): string {

@@ -159,3 +159,11 @@ left unfinished. Append as you go; a line or two per entry is right.
 - Fixed structurally rather than per branch. The save loop carries `uncertain`, which starts from the person's existing doubt and is set by any unknown attempt. While uncertain, only a 200 or a 412 showing our value settles the save. Removing auto-retry was considered and rejected: a manual re-save has the same flaw.
 - The 200 and 412 paths now share one confirm helper, which closes the auditor's S4 gap (their ordering against loads diverging) by construction.
 - Also: a "saved again elsewhere" message when only the version moved; `If-Match` parsed as in HTTP, with an empty tag refused; doc qualifier: the no-overwrite guarantee holds for the grid, and a PATCH without If-Match is unconditional by design.
+
+## Review round 8 → the doubt becomes data
+
+- Round 7's rule held within a save, but doubt carried over from an earlier save was a guess, and it produced false messages. A manager's own earlier save of 24h (stored, answers lost) was announced as "someone else changed… replace theirs".
+- Under If-Match a doubtful save can only ever land while the row is at the version it carried. So the doubt is a concrete pair (version, value), and any observation of the row resolves it: a load or 412 at another version means that save can no longer land, and what's shown is the truth. The "?" clears itself.
+- Messages state what the server holds and, when it's known, whose save it was ("your earlier save of 24h went through after all"). They never say "someone else".
+- The auditor found the API's returned versions were never checked against the real `xmin`. A wrong 412 version would make every re-save fail forever, with all suites green. Now asserted, together with the cause: a re-save on the 412's version lands, in Go and end to end.
+- A sweep for tests that write person 3 without restoring it found four (the R1-X1 lesson, applied systematically rather than to the lines that were reported).
