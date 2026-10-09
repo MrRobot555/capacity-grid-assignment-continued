@@ -15,8 +15,8 @@ import {
 const response = (deeHours: number): CapacityResponse => ({
   weeks: ['2026-01-05', '2026-01-12'],
   people: [
-    { id: 4, name: 'Dee Okafor', weeklyHours: deeHours, allocated: [45, 40] },
-    { id: 1, name: 'Ana Ferreira', weeklyHours: 40, allocated: [0, 30] },
+    { id: 4, name: 'Dee Okafor', weeklyHours: deeHours, version: 'v1', allocated: [45, 40] },
+    { id: 1, name: 'Ana Ferreira', weeklyHours: 40, version: 'v1', allocated: [0, 30] },
   ],
 })
 
@@ -112,8 +112,8 @@ describe('capacityReducer', () => {
         response: {
           weeks: ['2026-01-05'],
           people: [
-            { id: 2, name: 'Fatima Yilmaz', weeklyHours: 40, allocated: [0] },
-            { id: 1, name: 'Fatima Öztürk', weeklyHours: 40, allocated: [0] },
+            { id: 2, name: 'Fatima Yilmaz', weeklyHours: 40, version: 'v1', allocated: [0] },
+            { id: 1, name: 'Fatima Öztürk', weeklyHours: 40, version: 'v1', allocated: [0] },
           ],
         },
       },
@@ -125,7 +125,7 @@ describe('capacityReducer', () => {
     const state = run(
       { type: 'fetchStarted', key: 'A', issuedAt: 1 },
       { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) },
-      { type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 50 }, confirmedAt: 2 },
+      { type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 50, version: 'v2' }, confirmedAt: 2 },
     )
     expect(state.people[4].weeklyHours).toBe(50)
     expect(state.data?.rows.find((r) => r.id === 4)?.allocated).toEqual([45, 40])
@@ -138,7 +138,7 @@ describe('capacityReducer', () => {
       { type: 'fetchStarted', key: 'A', issuedAt: 1 },
       { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) },
       { type: 'fetchStarted', key: 'B', issuedAt: 2 },
-      { type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 50 }, confirmedAt: 3 },
+      { type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 50, version: 'v2' }, confirmedAt: 3 },
       { type: 'fetchSucceeded', key: 'B', issuedAt: 2, response: response(40) },
     )
     expect(state.data?.key).toBe('B')
@@ -158,21 +158,18 @@ describe('capacityReducer', () => {
     }
   })
 
-  it('clears a settled save with a load issued after it settled, not before', () => {
-    const settled = run(
-      { type: 'saveRetrying', id: 4 },
+  it("keeps the row's version from loads and from saves, for the next If-Match", () => {
+    const loaded = run(
       { type: 'fetchStarted', key: 'A', issuedAt: 1 },
-      { type: 'saveSettled', id: 4, at: 2 },
+      { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) },
     )
-    const early = capacityReducer(settled, { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) })
-    expect(certaintyOf(early, 4)).toBe('retrying')
-    const later = [
-      { type: 'fetchStarted', key: 'A', issuedAt: 3 },
-      { type: 'fetchSucceeded', key: 'A', issuedAt: 3, response: response(50) },
-    ] as Action[]
-    const after = later.reduce(capacityReducer, settled)
-    expect(certaintyOf(after, 4)).toBe('certain')
-    expect(after.people[4].weeklyHours).toBe(50)
+    expect(loaded.people[4].version).toBe('v1')
+    const saved = capacityReducer(loaded, {
+      type: 'saveConfirmed',
+      person: { id: 4, name: 'Dee Okafor', weeklyHours: 50, version: 'v9' },
+      confirmedAt: 2,
+    })
+    expect(saved.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 50, version: 'v9' })
   })
 
   it("keeps each person's doubt to themselves", () => {
@@ -180,7 +177,7 @@ describe('capacityReducer', () => {
       { type: 'saveRetrying', id: 4 },
       { type: 'saveGaveUp', id: 1 },
       // A confirmed save of Ana says nothing about Dee.
-      { type: 'saveConfirmed', person: { id: 1, name: 'Ana Ferreira', weeklyHours: 36 }, confirmedAt: 3 },
+      { type: 'saveConfirmed', person: { id: 1, name: 'Ana Ferreira', weeklyHours: 36, version: 'v2' }, confirmedAt: 3 },
     )
     expect(certaintyOf(state, 4)).toBe('retrying')
     expect(certaintyOf(state, 1)).toBe('certain')
@@ -191,7 +188,7 @@ describe('capacityReducer', () => {
     expect(certaintyOf(gaveUp, 4)).toBe('unknown')
     const saved = capacityReducer(gaveUp, {
       type: 'saveConfirmed',
-      person: { id: 4, name: 'Dee Okafor', weeklyHours: 40 },
+      person: { id: 4, name: 'Dee Okafor', weeklyHours: 40, version: 'v2' },
       confirmedAt: 2,
     })
     expect(certaintyOf(saved, 4)).toBe('certain')
@@ -201,7 +198,7 @@ describe('capacityReducer', () => {
     const state = run(
       { type: 'fetchStarted', key: 'A', issuedAt: 1 },
       { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) },
-      { type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 50 }, confirmedAt: 2 },
+      { type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 50, version: 'v2' }, confirmedAt: 2 },
       { type: 'fetchStarted', key: 'B', issuedAt: 3 },
       // Someone else changed it again since: the newer load wins.
       { type: 'fetchSucceeded', key: 'B', issuedAt: 3, response: response(36) },

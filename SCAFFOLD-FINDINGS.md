@@ -23,34 +23,37 @@ sent. Then:
 - **refetch** can read the old value just before the save commits: a proxy
   can give up while the API is still working.
 
-The scaffold's API gave a client no way to settle the question. This
-repository got there the long way. Three review rounds added machinery to
-*track* the doubt (per-person state, a server-side outcome registry with
-lookups and fencing, `pg_xact_status`, cross-tab polling), and each layer brought
-new defects. The fifth round replaced all of it with the simpler model the
-problem had all along:
+The scaffold's API gave a client no way to settle the question, and the root
+is §5: a row has no version, so the server can't tell a repeat of an old
+change from a current one. This repository got there the long way. Several
+review rounds added machinery to *track* the doubt (per-person state, then a
+server-side registry of save outcomes with lookups, fencing and polling, then
+replays keyed by a save id). Each layer brought new defects; the last could
+even let a repeat overwrite another manager's newer change. Round 6 replaced
+all of it with the version the rows already have:
 
-- **a save sets an absolute value, so it is idempotent.** Every save carries a
-  client-chosen **`Save-Id`**. When an attempt gets no definite answer, the
-  client sends the *identical* request again, until it gets one (up to 5
-  attempts, with "?" shown meanwhile);
-- **the API recognises a repeat** (`api/saves.go`). A repeat of a stored save
-  is answered from the record, so it never re-applies an old value over a
-  newer change. A repeat of a refused save is refused, so a late duplicate
-  can't contradict "not saved". A repeat of a save with an unknown outcome
-  simply runs again;
-- **a definite answer to a repeat is never applied as the new value**: it may
-  be the record of an earlier attempt. The client reloads instead.
+- **Postgres's `xmin` system column is a row version.** It changes on every
+  update of a row, and needs no schema change. `GET /api/capacity` returns it
+  as each person's `version`;
+- **a save sends it back** (`If-Match`), and the `UPDATE` applies only if the
+  row is still at that version. Otherwise the API answers **412 with the
+  current row**;
+- **a lost answer is settled by repeating the identical request.** If the first
+  attempt never landed, the repeat applies. If it did, the repeat meets the
+  version it produced and gets the current row back, which holds our value.
+  If someone else changed the row in between, the current row shows *their*
+  value, and nothing of ours overwrites it.
 
 **Shown by:**
 - `TestLostCommitIsUnknownAndARepeatSettlesIt`. A TCP proxy loses the outcome
   of `COMMIT` three ways (answer lost, `COMMIT` never delivered, answer held
-  past the deadline). The API says `stored: unknown` each time, and the repeat
-  settles it with a definite 200.
-- `api/saves_test.go`.
+  past the deadline). The API says `stored: unknown`, and the repeat settles
+  it: 200, or 412 showing the stored value, never a second write.
+- `TestSaveOnAStaleVersionIsRefused` and `TestLateCopyCannotOverwriteANewerChange`.
 - In the browser, `e2e/tests/editing.spec.ts`: "a save whose answer is lost is
-  found to be stored" (the repeat is answered from the API's record) and "a
-  save cut off before reaching the server is sent again and stored".
+  found to be stored" (the real API answers the repeat 412 with our value),
+  "a save cut off before reaching the server is sent again and stored", and
+  "a save on a stale view doesn't overwrite another manager's change".
 
 ## 2. The database image sorts names by byte, whatever its locale says
 
@@ -105,13 +108,17 @@ schema is fixed.
 
 ## 5. Nothing can tell two managers' edits apart
 
-`people` has no version or `updated_at`. When two managers edit the same
-person, the last write wins and the first manager is never told. This
-repository can't close that without a column; a manager also doesn't see
-another manager's change, or a save still being retried in another tab, until
-the grid reloads.
-**The scaffold needs:** a `version` column, `If-Match` on `PATCH`, and a 412
-answer the editor can show as "changed by someone else".
+`people` has no version or `updated_at`. With the scaffold's API, when two
+managers edit the same person, the last write wins and the first manager is
+never told.
+This repository closes that **without a schema change**, using Postgres's
+`xmin` system column as the row version (§1). A save made on a stale view
+gets 412 with the current row, and the editor says "changed on the server
+since you loaded them (now 26h)" instead of silently overwriting.
+**The scaffold still needs** a real `version` column. `xmin` is a 32-bit
+transaction id: fine for "has this row changed since I read it" across
+seconds or minutes, but not a durable version to store or compare over long
+periods.
 
 ## 6. The server skeleton has no timeouts and leaked database errors
 
@@ -140,7 +147,7 @@ day-by-day oracle (`TestCapacityMatchesDayByDayOracle`).
 
 ---
 
-*How these were found:* data probing before any code, then five rounds of
+*How these were found:* data probing before any code, then six rounds of
 review by two independent reviewers (one adversarial with reproductions, one
 auditing the tests by mutation), each finding recorded with a verdict in
 `.notes/review-register.md`.

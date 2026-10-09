@@ -38,7 +38,9 @@ test('real save round trip: Cem Aydin 20h → 24h reaches the database', async (
     editor(page).getByRole('button', { name: 'Save' }).click(),
   ])
   expect(patchResponse.status()).toBe(200)
-  expect(await patchResponse.json()).toEqual({ id: CEM.id, name: CEM.name, weeklyHours: 24 })
+  const saved = await patchResponse.json()
+  expect(saved).toMatchObject({ id: CEM.id, name: CEM.name, weeklyHours: 24 })
+  expect(saved.version).toBeTruthy() // the row's new version, for the next If-Match
 
   await expect(editor(page)).toHaveCount(0)
   await expect(capButton(page, CEM.name)).toHaveText('24h')

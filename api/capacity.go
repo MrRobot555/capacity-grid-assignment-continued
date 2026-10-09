@@ -28,8 +28,10 @@ type personCapacity struct {
 	Name string `json:"name"`
 	// WeeklyHours is the person's capacity for every week. The schema keeps a
 	// single current value with no history, so it is not repeated per week.
-	WeeklyHours float64   `json:"weeklyHours"`
-	Allocated   []float64 `json:"allocated"`
+	WeeklyHours float64 `json:"weeklyHours"`
+	// Version is the row's xmin: a save sends it back as If-Match (people.go).
+	Version   string    `json:"version"`
+	Allocated []float64 `json:"allocated"`
 }
 
 // capacityQuery returns one row per person with allocated hours for each week
@@ -69,13 +71,14 @@ allocated AS (
 SELECT p.id,
        p.name,
        p.weekly_hours::float8,
+       p.xmin::text,
        array_agg(COALESCE(al.hours, 0)::float8 ORDER BY w.week_start) AS allocated
 FROM people p
 CROSS JOIN weeks w
 LEFT JOIN allocated al
   ON al.person_id = p.id
  AND al.week_start = w.week_start
-GROUP BY p.id
+GROUP BY p.id, p.xmin::text
 ORDER BY p.name, p.id`
 
 // handleCapacity serves GET /api/capacity?from=YYYY-MM-DD&to=YYYY-MM-DD
@@ -139,7 +142,7 @@ func loadCapacity(ctx context.Context, db querier, weeks []time.Time) ([]personC
 	people := []personCapacity{}
 	for rows.Next() {
 		var p personCapacity
-		if err := rows.Scan(&p.ID, &p.Name, &p.WeeklyHours, &p.Allocated); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.WeeklyHours, &p.Version, &p.Allocated); err != nil {
 			return nil, err
 		}
 		people = append(people, p)

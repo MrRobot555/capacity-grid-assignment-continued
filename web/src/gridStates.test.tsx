@@ -7,8 +7,8 @@ import { CapacityGrid } from './CapacityGrid'
 const capacity: CapacityResponse = {
   weeks: ['2026-01-05', '2026-01-12'],
   people: [
-    { id: 1, name: 'Ana Ferreira', weeklyHours: 40, allocated: [0, 30] },
-    { id: 4, name: 'Dee Okafor', weeklyHours: 40, allocated: [45, 40] },
+    { id: 1, name: 'Ana Ferreira', weeklyHours: 40, version: 'v1', allocated: [0, 30] },
+    { id: 4, name: 'Dee Okafor', weeklyHours: 40, version: 'v1', allocated: [45, 40] },
   ],
 }
 

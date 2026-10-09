@@ -28,9 +28,8 @@ export function formatHours(hours: number): string {
 
 /**
  * How sure the grid can be about a person's capacity:
- *  - 'certain':  the last value the server confirmed (or loaded after it);
- *  - 'retrying': a save of ours got no definite answer and is being sent
- *    again, or was just confirmed by a repeat and the range is reloading;
+ *  - 'certain':  the last value the server confirmed or loaded;
+ *  - 'retrying': a save of ours got no definite answer and is being sent again;
  *  - 'unknown':  we stopped sending it without a definite answer.
  */
 export type Certainty = 'certain' | 'retrying' | 'unknown'
@@ -63,9 +62,7 @@ export function capacityView(weeklyHours: number, certainty: Certainty): Capacit
 }
 
 export function certaintyOf(state: Pick<State, 'unsure'>, id: number): Certainty {
-  const unsure = state.unsure[id]
-  if (!unsure) return 'certain'
-  return unsure.state === 'unknown' ? 'unknown' : 'retrying'
+  return state.unsure[id] ?? 'certain'
 }
 
 export function allocationStatus(allocated: number, capacity: number): Status {
@@ -84,14 +81,11 @@ export type Loaded = {
 }
 
 /**
- * Doubt about one person's capacity.
- *  - 'retrying': our save is being sent again;
- *  - 'settled': a repeat got a definite answer, so the save is finished, and
- *    a load issued after `at` shows the truth;
- *  - 'unknown': we gave up without a definite answer. Only a confirmed save
- *    clears it: a load can't, because a lost save may still be on its way.
+ * Doubt about one person's capacity. 'unknown' is cleared only by a confirmed
+ * save of that person: a load can't, because a lost attempt may still arrive.
+ * (If-Match means it can't overwrite anything newer when it does.)
  */
-type Unsure = { state: 'retrying' } | { state: 'settled'; at: number } | { state: 'unknown' }
+type Unsure = 'retrying' | 'unknown'
 
 export type State = {
   /** The range the grid is asking for. */
@@ -102,7 +96,7 @@ export type State = {
   error: string | null
   /** The last range that loaded. Kept on screen while the next one loads or fails. */
   data: Loaded | null
-  people: Record<number, { name: string; weeklyHours: number }>
+  people: Record<number, { name: string; weeklyHours: number; version: string }>
   /** When each person's latest save was confirmed, on the same clock as `issuedAt`. */
   confirmedAt: Record<number, number>
   unsure: Record<number, Unsure>
@@ -112,12 +106,10 @@ export type Action =
   | { type: 'fetchStarted'; key: string; issuedAt: number }
   | { type: 'fetchSucceeded'; key: string; issuedAt: number; response: CapacityResponse }
   | { type: 'fetchFailed'; key: string; issuedAt: number; error: string }
-  /** A save answered at the first attempt: its payload is the stored row. */
+  /** The server's row after a save: what it stored (200), or what it holds
+   * now (412). Either is fresh, so it is applied. */
   | { type: 'saveConfirmed'; person: Person; confirmedAt: number }
   | { type: 'saveRetrying'; id: number }
-  /** A repeat got a definite answer. Its payload may be an old record, so it is
-   * not applied: the range reloads, and the load shows what the server holds. */
-  | { type: 'saveSettled'; id: number; at: number }
   | { type: 'saveGaveUp'; id: number }
 
 export const initialState: State = {
@@ -154,18 +146,13 @@ export function capacityReducer(state: State, action: Action): State {
         // weekly hours. The confirmed save is newer, so it wins.
         const confirmed = state.confirmedAt[p.id]
         const keepLocal = confirmed !== undefined && confirmed > action.issuedAt && p.id in people
-        people[p.id] = { name: p.name, weeklyHours: keepLocal ? people[p.id].weeklyHours : p.weeklyHours }
+        people[p.id] = keepLocal ? people[p.id] : { name: p.name, weeklyHours: p.weeklyHours, version: p.version }
       }
-      // A load issued after a save was settled shows that save's outcome.
-      const unsure = Object.fromEntries(
-        Object.entries(state.unsure).filter(([, u]) => !(u.state === 'settled' && u.at < action.issuedAt)),
-      )
       return {
         ...state,
         loading: false,
         error: null,
         people,
-        unsure,
         data: {
           key: action.key,
           weeks: action.response.weeks,
@@ -181,23 +168,20 @@ export function capacityReducer(state: State, action: Action): State {
       return { ...state, loading: false, error: action.error }
 
     case 'saveConfirmed': {
-      const { id, name, weeklyHours } = action.person
+      const { id, name, weeklyHours, version } = action.person
       return {
         ...state,
-        people: { ...state.people, [id]: { name, weeklyHours } },
+        people: { ...state.people, [id]: { name, weeklyHours, version } },
         confirmedAt: { ...state.confirmedAt, [id]: action.confirmedAt },
         unsure: without(state.unsure, id),
       }
     }
 
     case 'saveRetrying':
-      return { ...state, unsure: { ...state.unsure, [action.id]: { state: 'retrying' } } }
-
-    case 'saveSettled':
-      return { ...state, unsure: { ...state.unsure, [action.id]: { state: 'settled', at: action.at } } }
+      return { ...state, unsure: { ...state.unsure, [action.id]: 'retrying' } }
 
     case 'saveGaveUp':
-      return { ...state, unsure: { ...state.unsure, [action.id]: { state: 'unknown' } } }
+      return { ...state, unsure: { ...state.unsure, [action.id]: 'unknown' } }
   }
 }
 

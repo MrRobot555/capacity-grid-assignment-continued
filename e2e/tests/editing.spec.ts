@@ -86,11 +86,11 @@ test('save failure (500) leaves the grid untouched; Retry applies the confirmed 
 // sent again, reaches the real API, and is stored: no "Not saved", ever.
 test('a save cut off before reaching the server is sent again and stored', async ({ page, request }) => {
   await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
-  const saveIds: (string | null)[] = []
+  const ifMatches: (string | null)[] = []
   await routeApi(page, async (route, req) => {
     if (!isPatch(req, 3)) return false
-    saveIds.push(req.headers()['save-id'] ?? null)
-    if (saveIds.length > 1) return false // the repeat goes to the real API
+    ifMatches.push(req.headers()['if-match'] ?? null)
+    if (ifMatches.length > 1) return false // the repeat goes to the real API
     await route.abort('connectionreset')
     return true
   })
@@ -101,8 +101,9 @@ test('a save cut off before reaching the server is sent again and stored', async
 
     await expect(editor(page)).toHaveCount(0)
     await expect(capButton(page, 'Cem Aydin')).toHaveText('24h')
-    expect(saveIds).toHaveLength(2)
-    expect(saveIds[1]).toBe(saveIds[0])
+    expect(ifMatches).toHaveLength(2)
+    expect(ifMatches[0]).toBeTruthy()
+    expect(ifMatches[1]).toBe(ifMatches[0]) // the identical request
   } finally {
     const res = await request.patch('/api/people/3', { data: { weeklyHours: 20 } })
     expect(res.status(), 'restoring Cem Aydin to 20h').toBe(200)
@@ -110,8 +111,9 @@ test('a save cut off before reaching the server is sent again and stored', async
 })
 
 // The request reaches the real API and is stored; only its answer is lost.
-// The repeat (same Save-Id) is answered from the API's record, so it isn't
-// stored twice, and the grid reloads to show what the API holds.
+// The identical repeat meets the version its own first attempt produced: the
+// real API answers 412 with the current row, which holds our value, so the
+// grid knows the save landed, and it isn't stored twice.
 test('a save whose answer is lost is found to be stored, and the grid says so', async ({ page, request }) => {
   await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
   const answers: number[] = []
@@ -133,8 +135,7 @@ test('a save whose answer is lost is found to be stored, and the grid says so', 
 
     await expect(editor(page)).toHaveCount(0)
     await expect(capButton(page, 'Cem Aydin')).toHaveText('24h')
-    // Both attempts were answered 200: the repeat from the API's record.
-    expect(answers).toEqual([200, 200])
+    expect(answers).toEqual([200, 412])
   } finally {
     const res = await request.patch('/api/people/3', { data: { weeklyHours: 20 } })
     expect(res.status(), 'restoring Cem Aydin to 20h').toBe(200)
@@ -334,4 +335,27 @@ test("switching to another person's editor puts the cursor in their field", asyn
   await page.keyboard.press('Control+A')
   await page.keyboard.type('36')
   await expect(editorInput(page, 'Ana Ferreira')).toHaveValue('36')
+})
+
+// Two managers: another one saves Cem after this grid loaded him. Saving on
+// the old version must not overwrite their change, and must say so.
+test("a save on a stale view doesn't overwrite another manager's change", async ({ page, request }) => {
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  try {
+    const other = await request.patch('/api/people/3', { data: { weeklyHours: 26 } })
+    expect(other.status()).toBe(200)
+
+    await openEditor(page, 'Cem Aydin')
+    await editorInput(page, 'Cem Aydin').fill('24')
+    await editorInput(page, 'Cem Aydin').press('Enter')
+
+    await expect(editorHint(page)).toContainText('changed on the server since you loaded them (now 26h)')
+    await expect(capButton(page, 'Cem Aydin')).toHaveText('26h')
+    const res = await request.get(`/api/capacity?from=${FIXTURE.from}&to=${FIXTURE.to}`)
+    const cem = ((await res.json()) as { people: { id: number; weeklyHours: number }[] }).people.find((p) => p.id === 3)
+    expect(cem?.weeklyHours).toBe(26)
+  } finally {
+    const res = await request.patch('/api/people/3', { data: { weeklyHours: 20 } })
+    expect(res.status(), 'restoring Cem Aydin to 20h').toBe(200)
+  }
 })

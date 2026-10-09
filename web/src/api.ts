@@ -5,6 +5,8 @@ export type CapacityPerson = {
   name: string
   /** Capacity for every week. The schema keeps one value per person, no history. */
   weeklyHours: number
+  /** The row's version (its xmin): sent back as If-Match when saving. */
+  version: string
   /** Allocated hours, aligned to CapacityResponse.weeks. */
   allocated: number[]
 }
@@ -15,7 +17,7 @@ export type CapacityResponse = {
   people: CapacityPerson[]
 }
 
-export type Person = { id: number; name: string; weeklyHours: number }
+export type Person = { id: number; name: string; weeklyHours: number; version: string }
 
 /**
  * A failure with a message that can be shown to a manager as-is.
@@ -23,12 +25,15 @@ export type Person = { id: number; name: string; weeklyHours: number }
  * `fromApi` is true when our API itself answered with its JSON error.
  * `outcomeUnknown` is true when even the API can't say whether it stored the
  * value (its COMMIT got no answer: `"stored": "unknown"`).
+ * `current` comes with a 412: the row changed since the version the save
+ * sent, and this is the row as it is now.
  */
 export class ApiError extends Error {
   constructor(
     message: string,
     readonly fromApi = false,
     readonly outcomeUnknown = false,
+    readonly current?: Person,
   ) {
     super(message)
   }
@@ -67,8 +72,8 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   // answers with plain text or HTML, so a parse failure is not exceptional.
   const body: unknown = await res.json().catch(() => null)
   if (!res.ok) {
-    const { error: message, stored } = (body ?? {}) as { error?: unknown; stored?: unknown }
-    if (typeof message === 'string') throw new ApiError(message, true, stored === 'unknown')
+    const { error: message, stored, current } = (body ?? {}) as { error?: unknown; stored?: unknown; current?: Person }
+    if (typeof message === 'string') throw new ApiError(message, true, stored === 'unknown', current)
     throw new ApiError(`The server couldn't handle the request (${res.status}).`)
   }
   if (body === null) throw new ApiError('The server sent a response we could not read.')
@@ -80,24 +85,16 @@ export function fetchCapacity(from: ISODate, to: ISODate, signal?: AbortSignal) 
 }
 
 /**
- * A new id for a save. Not crypto.randomUUID: that exists only in secure
- * contexts, and the app is served over plain HTTP on the network too
- * (Compose runs Vite on 0.0.0.0), where it would make every save throw.
+ * Saves only if the row is still at `version` (If-Match). That makes the save
+ * safe to repeat when its answer is lost: the identical request either applies
+ * (the first attempt never landed) or gets 412 with the current row (it, or
+ * someone else, changed the row). And a save made on a stale view can't
+ * silently overwrite someone else's change.
  */
-export function newSaveId(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(16))
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
-}
-
-/**
- * `saveId` names this save. When its answer is lost, the same request is sent
- * again with the same id: the API answers a repeat from its record, or runs it
- * again, which is safe because a save sets an absolute value (api/saves.go).
- */
-export function updateWeeklyHours(id: number, weeklyHours: number, saveId: string) {
+export function updateWeeklyHours(id: number, weeklyHours: number, version: string) {
   return request<Person>(`/api/people/${id}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', 'Save-Id': saveId },
+    headers: { 'Content-Type': 'application/json', 'If-Match': `"${version}"` },
     body: JSON.stringify({ weeklyHours }),
     // A save must end, one way or the other, or it would lock editing forever.
     signal: AbortSignal.timeout(SAVE_TIMEOUT_MS),

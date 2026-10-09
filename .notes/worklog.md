@@ -143,3 +143,11 @@ left unfinished. Append as you go; a line or two per entry is right.
 - Re-measured the reviewer's correction before publishing it: 6,883 of 8,413 assignments span a weekend; 3,111 end on one.
 - Memory updated: never reset the recurrence count; a recurring redesign must subtract.
 - Caught after the gate check: the "id reusable for another change" mutant let a test's PATCH to person 10 through, and the test's cleanup only restored person 3. The leftover 22h shifted two browser tests' over-counts. Restored person 10, diffed all 500 against the seed, and made that test's cleanup restore every person it could touch, so a mutant can't pollute the seed either.
+
+## Review round 6 → the root found: no row version (owner's decision: xmin)
+
+- The area recurred again in round 6: a repeat could overwrite another manager's change made in between, a late copy could overwrite a later confirmed save, and a restart lost the registry's guarantees. All had one root: the API couldn't tell a repeat of an old change from a current one, because a row has no version, the very gap SCAFFOLD-FINDINGS §5 names.
+- Postgres has one anyway: the `xmin` system column changes on every update of a row. No schema change. GET returns it as `version`; a save sends `If-Match`; the UPDATE applies only at that version, otherwise 412 with the current row.
+- A lost answer is settled by repeating the identical request: 200 if the first attempt never landed, 412 with our value if it did, 412 with someone else's value if they changed it, and then nothing of ours overwrites it.
+- Deleted: the Save-Id registry, replay rules and the `settled` state. As a by-product, two managers can no longer silently overwrite each other; the editor says "changed on the server since you loaded them (now Xh)" and keeps the typed value.
+- Gate hygiene: two of my Go gates type-asserted the 412 body unchecked, so a mutant made the test binary panic and the remaining tests never ran. They now fail with a message.

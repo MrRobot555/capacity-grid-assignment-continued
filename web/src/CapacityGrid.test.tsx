@@ -8,8 +8,8 @@ import { retryTiming } from './useCapacity'
 const capacity: CapacityResponse = {
   weeks: ['2026-01-05', '2026-01-12'],
   people: [
-    { id: 1, name: 'Ana Ferreira', weeklyHours: 40, allocated: [0, 30] },
-    { id: 4, name: 'Dee Okafor', weeklyHours: 40, allocated: [45, 40] },
+    { id: 1, name: 'Ana Ferreira', weeklyHours: 40, version: 'v1', allocated: [0, 30] },
+    { id: 4, name: 'Dee Okafor', weeklyHours: 40, version: 'v1', allocated: [45, 40] },
   ],
 }
 
@@ -31,7 +31,7 @@ it('keeps the grid honest through a failed save and a successful retry', async (
     json(500, { error: 'could not update person' }),
     // The server stores 48 for a typed 50 (say it rounds): the grid must show
     // what the server holds, not what was typed.
-    json(200, { id: 4, name: 'Dee Okafor', weeklyHours: 48 }),
+    json(200, { id: 4, name: 'Dee Okafor', weeklyHours: 48, version: 'v2' }),
   ]
   const fetchMock = vi.fn(async (_url: string, init?: RequestInit) =>
     init?.method === 'PATCH' ? patchResponses.shift()! : json(200, capacity),
@@ -117,7 +117,7 @@ it('finds people by name, ignoring case and accents', async () => {
     vi.fn(async () =>
       json(200, {
         ...capacity,
-        people: [...capacity.people, { id: 9, name: 'Søren Öberg', weeklyHours: 40, allocated: [0, 0] }],
+        people: [...capacity.people, { id: 9, name: 'Søren Öberg', weeklyHours: 40, version: 'v1', allocated: [0, 0] }],
       }),
     ),
   )

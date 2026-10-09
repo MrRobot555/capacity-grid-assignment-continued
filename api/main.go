@@ -13,12 +13,10 @@ import (
 
 type server struct {
 	db *pgxpool.Pool
-	// saves remembers saves by id, so a repeated save gets a definite answer (saves.go).
-	saves *saveRegistry
 }
 
 func newServer(db *pgxpool.Pool) *server {
-	return &server{db: db, saves: newSaveRegistry()}
+	return &server{db: db}
 }
 
 func main() {

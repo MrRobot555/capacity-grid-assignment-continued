@@ -140,20 +140,23 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
     setEditing({ ...editing, saving: true, error: null })
     let message: string
     try {
-      const result = await saveWeeklyHours(id, hours)
+      const result = await saveWeeklyHours(id, hours, people[id].version)
       if (result.ok) {
         // A save can take seconds; if the manager has moved on, leave focus alone.
         if (focusIsInEditorOrNowhere()) returnFocusTo.current = id
         setEditing((cur) => (cur?.id === id ? null : cur))
         return
       }
-      message = result.unconfirmed
-        ? `Couldn't confirm the save after ${SAVE_ATTEMPTS} tries, so the server may or may not hold it. Saving again is safe. (${errorText(result.error)})`
-        : `Not saved. ${errorText(result.error)}`
+      message =
+        'changed' in result
+          ? `Not saved: the weekly hours were changed on the server since you loaded them (now ${formatHours(result.changed.weeklyHours) + 'h'}). Your value is kept here; save again to replace it.`
+          : result.unconfirmed
+            ? `Couldn't confirm the save after ${SAVE_ATTEMPTS} tries, so the server may or may not hold it. Saving again is safe. (${errorText(result.error)})`
+            : `Not saved. ${errorText(result.error)}`
     } catch (err) {
       // Anything unexpected must still end the save, or the editor would stay
       // at "Saving…" with every button locked.
-      message = `Something went wrong before the save was sent: ${errorText(err)}`
+      message = `Something went wrong while saving: ${errorText(err)}. Saving again is safe.`
     }
     setEditing((cur) => (cur?.id === id ? { ...cur, saving: false, error: message, failed: true } : cur))
   }

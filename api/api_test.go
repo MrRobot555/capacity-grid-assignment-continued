@@ -169,8 +169,8 @@ func TestUpdatePerson(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&p); err != nil {
 		t.Fatal(err)
 	}
-	if p != (person{ID: 3, Name: "Cem Aydin", WeeklyHours: 32.5}) {
-		t.Errorf("got %+v", p)
+	if p.ID != 3 || p.Name != "Cem Aydin" || p.WeeklyHours != 32.5 || p.Version == "" {
+		t.Errorf("got %+v, want Cem Aydin at 32.5 with the row's new version", p)
 	}
 	// The response must be what was stored, not an echo of the request.
 	var stored float64
@@ -325,12 +325,14 @@ func TestSaveErrorResponse(t *testing.T) {
 		{"the save's deadline during COMMIT", commitOutcome(context.DeadlineExceeded), 500, "unknown"},
 		{"COMMIT refused by Postgres", commitOutcome(&pgconn.PgError{Code: "40001"}), 500, ""},
 		{"statement timeout", &pgconn.PgError{Code: "57014"}, 503, ""},
+		{"stale version", &staleError{current: person{ID: 3}}, 412, ""},
 		{"no connection in time", fmt.Errorf("begin: %w", context.DeadlineExceeded), 503, ""},
 		{"unknown person", pgx.ErrNoRows, 404, ""},
 		{"anything else", errors.New("boom"), 500, ""},
 	} {
 		status, body := saveErrorResponse(tc.err)
-		if status != tc.status || body["stored"] != tc.stored || body["error"] == "" {
+		stored, _ := body["stored"].(string)
+		if status != tc.status || stored != tc.stored || body["error"] == "" {
 			t.Errorf("%s: got %d %v, want %d with stored=%q", tc.name, status, body, tc.status, tc.stored)
 		}
 	}
@@ -338,17 +340,19 @@ func TestSaveErrorResponse(t *testing.T) {
 
 // End to end through a TCP proxy that loses the outcome of COMMIT in three
 // ways. The API can't know whether the save is stored, so it must say
-// "stored: unknown", never anything the client reads as "not saved". Then the
-// client's repeat of the same save (same Save-Id) settles it: a definite 200,
-// with the value stored.
+// "stored: unknown", never anything the client reads as "not saved". The
+// client's repeat of the identical request (same If-Match) then settles it:
+// 200 if the first attempt never landed, or 412 whose current row shows the
+// value it set. Either way the value is stored once, and never over a newer change.
 func TestLostCommitIsUnknownAndARepeatSettlesIt(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		mode proxyMode
+		name   string
+		mode   proxyMode
+		repeat int // the repeat's answer
 	}{
-		{"COMMIT reaches Postgres, its answer is lost", proxyCut},
-		{"COMMIT never reaches Postgres", proxyDrop},
-		{"the answer is held until the save's deadline", proxyStall},
+		{"COMMIT reaches Postgres, its answer is lost", proxyCut, http.StatusPreconditionFailed},
+		{"COMMIT never reaches Postgres", proxyDrop, http.StatusOK},
+		{"the answer is held until the save's deadline", proxyStall, http.StatusPreconditionFailed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := testServer(t)
@@ -356,34 +360,133 @@ func TestLostCommitIsUnknownAndARepeatSettlesIt(t *testing.T) {
 			updateTimeout = 300 * time.Millisecond // so the stall case ends at the 2.3 s deadline
 			t.Cleanup(func() { updateTimeout = saved })
 			t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
+			version := versionOf(t, s, 3)
 
 			proxied := newServer(proxiedPool(t, tc.mode))
 			start := time.Now()
 			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 			defer cancel()
 			req := httptest.NewRequest("PATCH", "/api/people/3", strings.NewReader(`{"weeklyHours": 33}`)).WithContext(ctx)
-			req.Header.Set("Save-Id", "save-lost-commit")
+			req.Header.Set("If-Match", `"`+version+`"`)
 			rec := httptest.NewRecorder()
 			proxied.routes().ServeHTTP(rec, req)
 			if took := time.Since(start); took > saveDeadline()+time.Second {
 				t.Errorf("answered after %v; the whole save has a %v deadline", took, saveDeadline())
 			}
-			var body map[string]any
-			_ = json.NewDecoder(rec.Body).Decode(&body)
-			if body["stored"] != "unknown" {
+			if body := decodeBody(t, rec); body["stored"] != "unknown" {
 				t.Fatalf("the outcome of COMMIT was lost, so the answer must be stored: unknown; got %d %v", rec.Code, body)
 			}
 
-			// The repeat goes to the same API process (its registry) over a working connection.
-			proxied.db = s.db
-			repeat := patchWithID(t, proxied, "3", "save-lost-commit", `{"weeklyHours": 33}`)
-			if repeat.Code != http.StatusOK {
-				t.Errorf("repeat: status %d %s, want a definite 200", repeat.Code, repeat.Body)
+			repeat := patchIfMatch(t, s, "3", version, `{"weeklyHours": 33}`)
+			if repeat.Code != tc.repeat {
+				t.Errorf("repeat: status %d %s, want %d", repeat.Code, repeat.Body, tc.repeat)
+			}
+			if tc.repeat == http.StatusPreconditionFailed {
+				current, _ := decodeBody(t, repeat)["current"].(map[string]any)
+				if current == nil || current["weeklyHours"] != 33.0 {
+					t.Errorf("412 current = %v; it must show the stored 33, so the client can tell its save landed", current)
+				}
 			}
 			if h := storedHours(t, s, 3); h != 33 {
 				t.Errorf("after the repeat, stored %v, want 33", h)
 			}
 		})
+	}
+}
+
+func versionOf(t *testing.T, s *server, id int) string {
+	t.Helper()
+	var v string
+	if err := s.db.QueryRow(context.Background(), `SELECT xmin::text FROM people WHERE id = $1`, id).Scan(&v); err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+func patchIfMatch(t *testing.T, s *server, id, version, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("PATCH", "/api/people/"+id, strings.NewReader(body))
+	req.Header.Set("If-Match", `"`+version+`"`)
+	rec := httptest.NewRecorder()
+	s.routes().ServeHTTP(rec, req)
+	return rec
+}
+
+func storedHours(t *testing.T, s *server, id int) float64 {
+	t.Helper()
+	var h float64
+	if err := s.db.QueryRow(context.Background(), `SELECT weekly_hours::float8 FROM people WHERE id = $1`, id).Scan(&h); err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+func decodeBody(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var body map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	return body
+}
+
+// A save made on a stale view must not overwrite a newer change. Two
+// managers loaded version v; the first saves; the second, still on v, is told
+// the row changed (with the row as it is now), and nothing of theirs is stored.
+func TestSaveOnAStaleVersionIsRefused(t *testing.T) {
+	s := testServer(t)
+	t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
+	v := versionOf(t, s, 3)
+
+	first := patchIfMatch(t, s, "3", v, `{"weeklyHours": 24}`)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first: %d %s", first.Code, first.Body)
+	}
+	if got := decodeBody(t, first)["version"]; got == v || got == "" {
+		t.Errorf("version after a save = %v; it must change", got)
+	}
+
+	second := patchIfMatch(t, s, "3", v, `{"weeklyHours": 30}`)
+	body := decodeBody(t, second)
+	if second.Code != http.StatusPreconditionFailed || body["stored"] != nil {
+		t.Fatalf("second: %d %v, want a definite 412", second.Code, body)
+	}
+	if current, _ := body["current"].(map[string]any); current == nil || current["weeklyHours"] != 24.0 || current["version"] == "" {
+		t.Errorf("412 current = %v, want the row with 24 and its version", current)
+	}
+	if h := storedHours(t, s, 3); h != 24 {
+		t.Errorf("stored %v, want 24 (the stale save must not land)", h)
+	}
+}
+
+// A late copy of a request (a proxy that held on to it) carries the version
+// its sender saw, so it can't overwrite anything that happened since.
+func TestLateCopyCannotOverwriteANewerChange(t *testing.T) {
+	s := testServer(t)
+	t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
+	v := versionOf(t, s, 3)
+	do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 28}`) // a newer change lands first
+	if late := patchIfMatch(t, s, "3", v, `{"weeklyHours": 26}`); late.Code != http.StatusPreconditionFailed {
+		t.Errorf("late copy: status %d, want 412", late.Code)
+	}
+	if h := storedHours(t, s, 3); h != 28 {
+		t.Errorf("stored %v, want the newer 28", h)
+	}
+}
+
+func TestCapacityCarriesEachPersonsVersion(t *testing.T) {
+	s := testServer(t)
+	rec := do(t, s, "GET", "/api/capacity?from=2026-01-05&to=2026-01-11", "")
+	var resp struct {
+		People []map[string]any `json:"people"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range resp.People {
+		if p["id"] == 3.0 && p["version"] != versionOf(t, s, 3) {
+			t.Errorf("person 3's version = %v, want the row's xmin %s", p["version"], versionOf(t, s, 3))
+		}
 	}
 }
 
