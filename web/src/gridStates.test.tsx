@@ -50,6 +50,7 @@ it('says "1 week", not "1 weeks"', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => json(200, { ...capacity, weeks: ['2026-01-05'] })))
   render(<CapacityGrid from="2026-01-05" to="2026-01-11" onRangeChange={() => {}} />)
   expect(screen.getByRole('option', { name: '1 week' })).toBeInTheDocument()
+  expect(screen.getByText(/· 1 week/)).not.toHaveTextContent('1 weeks')
 })
 
 // The bug was in what the grid passes as the load's identity (the range key,

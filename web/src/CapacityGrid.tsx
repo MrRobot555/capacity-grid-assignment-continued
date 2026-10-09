@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type UIEvent } from 'react'
-import { ApiError } from './api'
-import { allocationStatus, parseWeeklyHours, rangeKey, type Status } from './capacityState'
+import { isDefiniteFailure } from './api'
+import { allocationStatus, formatHours, hundredths, parseWeeklyHours, rangeKey, type Status } from './capacityState'
 import {
   formatLong,
   formatShort,
@@ -45,14 +45,7 @@ type Editing = {
   error: string | null
   /** The last attempt failed, so the action is a retry. */
   failed: boolean
-  /** The last attempt got no definite answer: the server may hold the value. */
-  unconfirmed: boolean
-  /** Move focus into the editor when it next mounts. Only set when it opens, so
-   * a row that remounts (scrolling back, a search) doesn't steal focus. */
-  focus: boolean
 }
-
-const closedEditor = { saving: false, error: null, failed: false, unconfirmed: false }
 
 // CapacityGrid renders one row per person and one column per week, showing
 // how allocated each person is and making over-allocation obvious.
@@ -60,21 +53,25 @@ const closedEditor = { saving: false, error: null, failed: false, unconfirmed: f
 // A person's weekly hours are editable from the grid. The grid only ever shows
 // what the server has confirmed: while a save is in flight, or after it fails,
 // the typed value lives in the editor, not in the grid.
+//
+// The editor is one panel above the grid, not part of a row. Rows are
+// virtualised and filtered, so a row can unmount at any moment; an editor
+// inside one lost its focus, its error and its place whenever that happened.
 export function CapacityGrid({ from, to, onRangeChange }: Props) {
   const { state, retry, saveWeeklyHours } = useCapacity(from, to)
   const [onlyOver, setOnlyOver] = useState(false)
   const [query, setQuery] = useState('')
   const [editing, setEditing] = useState<Editing | null>(null)
   const slow = useSlow(state.loading ? state.requestedAt : null)
-  // After an editor closes, focus goes back to that person's capacity button.
+  // Set when the editor closes while it still had focus: focus then goes back
+  // to that person's capacity button, or to the grid if the row is gone.
   const returnFocusTo = useRef<number | null>(null)
-  const [scrollToId, setScrollToId] = useState<number | null>(null)
   const { scrollerRef, first, last, rowHeight, onScroll } = useRowWindow()
 
   const range = { from, to }
   const weeks = weekCount(from, to)
   const thisWeek = mondayOf(todayISO())
-  const { data, people } = state
+  const { data, people, unconfirmedAt } = state
 
   const rows = useMemo(() => {
     if (!data) return []
@@ -95,36 +92,23 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
   const windowEnd = Math.min(visible.length, last)
   const windowStart = Math.min(first, windowEnd)
   const showingOtherRange = data !== null && data.key !== rangeKey(from, to)
-  const editingName = editing ? people[editing.id]?.name : undefined
-  const editingRendered =
-    editing !== null && visible.slice(windowStart, windowEnd).some((row) => row.id === editing.id)
+  const editingPerson = editing ? people[editing.id] : undefined
 
   useEffect(() => {
     const id = returnFocusTo.current
     if (id === null || editing !== null) return
     returnFocusTo.current = null
-    scrollerRef.current?.querySelector<HTMLElement>(`button[data-person-id="${id}"]`)?.focus({ preventScroll: true })
+    const button = scrollerRef.current?.querySelector<HTMLElement>(`button[data-person-id="${id}"]`)
+    ;(button ?? scrollerRef.current)?.focus({ preventScroll: true })
   })
 
-  // "Show" on the off-screen save error: once the filters are cleared, scroll to the row.
-  useEffect(() => {
-    if (scrollToId === null) return
-    const index = visible.findIndex((row) => row.id === scrollToId)
-    const el = scrollerRef.current
-    if (index >= 0 && el) el.scrollTop = Math.max(0, index * rowHeight - el.clientHeight / 3)
-    setScrollToId(null)
-  }, [scrollToId, visible, rowHeight, scrollerRef])
-
   function openEditor(id: number, weeklyHours: number) {
-    setEditing({ id, draft: String(weeklyHours), ...closedEditor, focus: true })
+    setEditing({ id, draft: String(weeklyHours), saving: false, error: null, failed: false })
   }
 
   function closeEditor() {
     if (!editing || editing.saving) return
-    returnFocusTo.current = editing.id
-    // After a save with no definite answer the grid may be showing a value the
-    // server no longer holds. Reload, so it shows what the server has.
-    if (editing.unconfirmed) retry()
+    if (focusIsInEditorOrNowhere()) returnFocusTo.current = editing.id
     setEditing(null)
   }
 
@@ -136,22 +120,21 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
       setEditing({ ...editing, error: hours, failed: false })
       return
     }
-    // Nothing to save, unless the last attempt's outcome is unknown: then the
+    // Nothing to save, unless an earlier save's outcome is unknown: then the
     // server may hold something else, and only sending the value makes it so.
-    if (hours === people[id]?.weeklyHours && !editing.unconfirmed) {
+    if (hours === people[id]?.weeklyHours && unconfirmedAt[id] === undefined) {
       closeEditor()
       return
     }
     setEditing({ ...editing, saving: true, error: null })
     try {
       await saveWeeklyHours(id, hours)
-      returnFocusTo.current = id
+      // A save can take seconds; if the manager has moved on, leave focus alone.
+      if (focusIsInEditorOrNowhere()) returnFocusTo.current = id
       setEditing((cur) => (cur?.id === id ? null : cur))
     } catch (err) {
-      const { message, unconfirmed } = describeSaveError(err)
-      setEditing((cur) =>
-        cur?.id === id ? { ...cur, saving: false, error: message, failed: true, unconfirmed } : cur,
-      )
+      const message = describeSaveError(err)
+      setEditing((cur) => (cur?.id === id ? { ...cur, saving: false, error: message, failed: true } : cur))
     }
   }
 
@@ -227,22 +210,15 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
         </div>
       )}
 
-      {editing?.error && editing.failed && !editingRendered && (
-        <div className="banner" role="alert">
-          <span>
-            The weekly hours for {editingName ?? 'this person'} weren't saved as asked. {editing.error}
-          </span>
-          <button
-            type="button"
-            onClick={() => {
-              setQuery('')
-              setOnlyOver(false)
-              setScrollToId(editing.id)
-            }}
-          >
-            Show
-          </button>
-        </div>
+      {editing && editingPerson && (
+        <CapacityEditor
+          name={editingPerson.name}
+          confirmed={editingPerson.weeklyHours}
+          editing={editing}
+          onChange={(draft) => setEditing({ ...editing, draft, error: null, failed: false })}
+          onSubmit={submit}
+          onCancel={closeEditor}
+        />
       )}
 
       {!data && state.loading && <Skeleton />}
@@ -253,6 +229,11 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
           onScroll={onScroll}
           className={`scroller${state.loading || showingOtherRange ? ' stale' : ''}`}
           aria-busy={state.loading}
+          // Focusable, so keyboard users can scroll it and focus has somewhere
+          // to go when the row it came from has been filtered away.
+          tabIndex={0}
+          role="region"
+          aria-label="Capacity by person and week"
         >
           <table aria-rowcount={visible.length + 1}>
             <thead>
@@ -287,53 +268,53 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
                 </tr>
               )}
               <Spacer height={windowStart * rowHeight} colSpan={data.weeks.length + 2} />
-              {visible.slice(windowStart, windowEnd).map((row, i) => (
-                <tr
-                  key={row.id}
-                  className={row.isOver ? 'is-over' : undefined}
-                  aria-rowindex={windowStart + i + 2}
-                >
-                  <th scope="row" className="name">
-                    {row.name}
-                  </th>
-                  <td className="cap">
-                    {/* Always the confirmed value; the draft lives in the editor below the row. */}
-                    <button
-                      type="button"
-                      className="cap-button"
-                      aria-label={`Weekly hours for ${row.name}: ${hours(row.weeklyHours)}. Edit`}
-                      data-person-id={row.id}
-                      aria-expanded={editing?.id === row.id}
-                      // While a save is in flight its editor must stay open, or a
-                      // failure would have nowhere to be shown.
-                      disabled={editing?.id === row.id || editing?.saving === true}
-                      onClick={() => openEditor(row.id, row.weeklyHours)}
-                    >
-                      {hours(row.weeklyHours)}
-                    </button>
-                    {editing?.id === row.id && (
-                      <CapacityEditor
+              {visible.slice(windowStart, windowEnd).map((row, i) => {
+                const isEditing = editing?.id === row.id
+                const unconfirmed = unconfirmedAt[row.id] !== undefined
+                return (
+                  <tr
+                    key={row.id}
+                    className={[row.isOver && 'is-over', isEditing && 'editing'].filter(Boolean).join(' ') || undefined}
+                    aria-rowindex={windowStart + i + 2}
+                  >
+                    <th scope="row" className="name">
+                      {row.name}
+                    </th>
+                    <td className="cap">
+                      {/* Always the confirmed value; the draft lives in the editor panel. */}
+                      <button
+                        type="button"
+                        className="cap-button"
+                        aria-label={
+                          `Weekly hours for ${row.name}: ${hours(row.weeklyHours)}` +
+                          (unconfirmed ? ', last save not confirmed' : '') +
+                          '. Edit'
+                        }
+                        title={unconfirmed ? "The last save couldn't be confirmed; reloading to check." : undefined}
+                        data-person-id={row.id}
+                        aria-expanded={isEditing}
+                        // While a save is in flight its editor must stay open, or a
+                        // failure would have nowhere to be shown.
+                        disabled={isEditing || editing?.saving === true}
+                        onClick={() => openEditor(row.id, row.weeklyHours)}
+                      >
+                        {hours(row.weeklyHours)}
+                        {unconfirmed && <span className="unconfirmed"> ?</span>}
+                      </button>
+                    </td>
+                    {row.allocated.map((allocated, i) => (
+                      <AllocationCell
+                        key={data.weeks[i]}
                         name={row.name}
-                        editing={editing}
-                        onChange={(draft) => setEditing({ ...editing, draft, error: null, failed: false })}
-                        onSubmit={submit}
-                        onCancel={closeEditor}
-                        onFocused={() => setEditing((cur) => (cur ? { ...cur, focus: false } : cur))}
+                        week={data.weeks[i]}
+                        allocated={allocated}
+                        capacity={row.weeklyHours}
+                        status={row.statuses[i]}
                       />
-                    )}
-                  </td>
-                  {row.allocated.map((allocated, i) => (
-                    <AllocationCell
-                      key={data.weeks[i]}
-                      name={row.name}
-                      week={data.weeks[i]}
-                      allocated={allocated}
-                      capacity={row.weeklyHours}
-                      status={row.statuses[i]}
-                    />
-                  ))}
-                </tr>
-              ))}
+                    ))}
+                  </tr>
+                )
+              })}
               <Spacer height={(visible.length - windowEnd) * rowHeight} colSpan={data.weeks.length + 2} />
             </tbody>
           </table>
@@ -351,7 +332,8 @@ function AllocationCell(props: {
   status: Status
 }) {
   const { name, week, allocated, capacity, status } = props
-  const over = allocated - capacity
+  // From the shown values, so "+N" always matches the two numbers on screen.
+  const over = (hundredths(allocated) - hundredths(capacity)) / 100
   const fill = capacity > 0 ? Math.min(allocated / capacity, 1) : allocated > 0 ? 1 : 0
   const title =
     `${name}, week of ${formatShort(week)}: ${hours(allocated)} allocated of ${hours(capacity)}` +
@@ -366,27 +348,26 @@ function AllocationCell(props: {
 
 function CapacityEditor(props: {
   name: string
+  confirmed: number
   editing: Editing
   onChange: (draft: string) => void
   onSubmit: () => void
   onCancel: () => void
-  onFocused: () => void
 }) {
-  const { name, editing, onChange, onSubmit, onCancel, onFocused } = props
+  const { name, confirmed, editing, onChange, onSubmit, onCancel } = props
   const hintId = `cap-hint-${editing.id}`
   const inputRef = useRef<HTMLInputElement>(null)
 
-  // Not autoFocus: that would fire again every time a virtualised or filtered
-  // row remounts, pulling focus (and the scroll position) back to the editor.
+  // Focus moves into the editor when it opens for a person, and at no other
+  // time. (The panel isn't inside a row, so nothing remounts it under the user.)
   useEffect(() => {
-    if (!editing.focus) return
     inputRef.current?.focus()
-    onFocused()
-  }, [editing.focus, onFocused])
+  }, [editing.id])
 
   return (
     <form
       className="cap-editor"
+      aria-label={`Edit weekly hours for ${name}`}
       // The app validates (parseWeeklyHours) and says why in the hint. Native
       // validation would block the submit on max={168} and show its own popup.
       noValidate
@@ -399,6 +380,9 @@ function CapacityEditor(props: {
         if (e.key === 'Escape') onCancel()
       }}
     >
+      <span className="cap-editor-title">
+        <strong>{name}</strong> · weekly hours (now {hours(confirmed)})
+      </span>
       <input
         aria-label={`Weekly hours for ${name}`}
         aria-describedby={hintId}
@@ -493,17 +477,18 @@ function useSlow(key: number | null) {
   return key !== null && slowKey === key
 }
 
-function describeSaveError(err: unknown): { message: string; unconfirmed: boolean } {
+function describeSaveError(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err)
-  // Our API answered with its own error: the value was not stored.
-  if (err instanceof ApiError && err.fromApi) return { message: `Not saved. ${message}`, unconfirmed: false }
-  // No answer, a timeout, or a proxy's error page: the server may have stored it
-  // before the answer was lost. The grid keeps the last confirmed value, and a
-  // retry is safe because a save sets an absolute value.
-  return {
-    message: `Couldn't confirm the save, so it may or may not have been stored. Retrying is safe. (${message})`,
-    unconfirmed: true,
-  }
+  if (isDefiniteFailure(err)) return `Not saved. ${message}`
+  // The server may have stored it before the answer was lost. The grid keeps
+  // the last confirmed value and reloads to check; retrying is safe because a
+  // save sets an absolute value.
+  return `Couldn't confirm the save, so it may or may not have been stored. Retrying is safe. (${message})`
+}
+
+function focusIsInEditorOrNowhere(): boolean {
+  const el = document.activeElement
+  return !el || el === document.body || el.closest('.cap-editor') !== null
 }
 
 /**
@@ -561,10 +546,6 @@ function searchable(text: string): string {
     .normalize('NFD')
     .replace(/\p{Diacritic}/gu, '')
     .replace(/[øæœßđłþð]/g, (c) => LETTERS[c])
-}
-
-function formatHours(n: number): string {
-  return String(Number(n.toFixed(2)))
 }
 
 function hours(n: number): string {

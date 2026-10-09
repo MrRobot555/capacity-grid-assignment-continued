@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -267,4 +269,42 @@ func captureLog(t *testing.T) *bytes.Buffer {
 	log.SetOutput(&buf)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	return &buf
+}
+
+func TestCommitOutcome(t *testing.T) {
+	if commitOutcome(nil) != nil {
+		t.Error("a successful commit must stay successful")
+	}
+	refused := &pgconn.PgError{Code: "40001"} // e.g. serialization failure: Postgres rolled back
+	if err := commitOutcome(refused); errors.Is(err, errOutcomeUnknown) {
+		t.Errorf("a COMMIT Postgres refused is a definite failure, got %v", err)
+	}
+	if err := commitOutcome(errors.New("conn closed")); !errors.Is(err, errOutcomeUnknown) {
+		t.Errorf("a COMMIT with no answer must be an unknown outcome, got %v", err)
+	}
+}
+
+// The save path's own 500 must leave a trace in the log, like the capacity one.
+func TestUpdatePersonLogsWhyItFailed(t *testing.T) {
+	s := testServer(t)
+	logs := captureLog(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest("PATCH", "/api/people/3", strings.NewReader(`{"weeklyHours": 21}`)).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	s.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status %d, want 500", rec.Code)
+	}
+	if !strings.Contains(logs.String(), "update person 3:") {
+		t.Errorf("the failure was not logged; log output: %q", logs.String())
+	}
+}
+
+func TestUpdatePersonAcceptsTheWholeWeek(t *testing.T) {
+	s := testServer(t)
+	t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
+	if rec := do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 168}`); rec.Code != http.StatusOK {
+		t.Errorf("168 h (every hour of the week) must be accepted: status %d", rec.Code)
+	}
 }

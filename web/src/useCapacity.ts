@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
-import { fetchCapacity, updateWeeklyHours } from './api'
+import { fetchCapacity, isDefiniteFailure, updateWeeklyHours } from './api'
 import { capacityReducer, initialState, rangeKey } from './capacityState'
 import type { ISODate } from './dates'
 
@@ -27,11 +27,24 @@ export function useCapacity(from: ISODate, to: ISODate) {
 
   const retry = useCallback(() => setAttempt((n) => n + 1), [])
 
-  /** Resolves once the server has stored the value; the grid changes only then. */
+  /**
+   * Resolves once the server has stored the value; the grid changes only then.
+   * If a save fails without a definite answer, the person is marked unconfirmed
+   * and the range reloads at once, so the grid catches up with whatever the
+   * server holds, whatever the manager does next.
+   */
   const saveWeeklyHours = useCallback(async (id: number, weeklyHours: number) => {
-    const person = await updateWeeklyHours(id, weeklyHours)
-    dispatch({ type: 'saveConfirmed', person, confirmedAt: ++clock.current })
-    return person
+    try {
+      const person = await updateWeeklyHours(id, weeklyHours)
+      dispatch({ type: 'saveConfirmed', person, confirmedAt: ++clock.current })
+      return person
+    } catch (err) {
+      if (!isDefiniteFailure(err)) {
+        dispatch({ type: 'saveUnconfirmed', id, at: ++clock.current })
+        setAttempt((n) => n + 1)
+      }
+      throw err
+    }
   }, [])
 
   return { state, retry, saveWeeklyHours }

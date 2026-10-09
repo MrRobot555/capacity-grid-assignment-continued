@@ -13,11 +13,22 @@ import type { ISODate } from './dates'
 
 export type Status = 'over' | 'full' | 'under' | 'none'
 
-// Classify on the same two decimals the grid displays, so a cell never shows
-// "40" against "40h" in red (capacity 39.999) or "+0" over.
+/**
+ * Hours as the grid shows them, in hundredths: the status, the "+N" overage
+ * and the text all use this one value, so a cell never shows "40" against
+ * "40h" in red (capacity 39.999), "+0" over, or disagree on a half-hundredth.
+ */
+export function hundredths(hours: number): number {
+  return Math.round(Number(hours.toFixed(2)) * 100)
+}
+
+export function formatHours(hours: number): string {
+  return String(hundredths(hours) / 100)
+}
+
 export function allocationStatus(allocated: number, capacity: number): Status {
-  const a = Math.round(allocated * 100)
-  const c = Math.round(capacity * 100)
+  const a = hundredths(allocated)
+  const c = hundredths(capacity)
   if (a > c) return 'over'
   if (a === 0) return 'none'
   if (a === c) return 'full'
@@ -42,6 +53,12 @@ export type State = {
   people: Record<number, { name: string; weeklyHours: number }>
   /** When each person's latest save was confirmed, on the same clock as `issuedAt`. */
   confirmedAt: Record<number, number>
+  /**
+   * People whose last save got no definite answer, and when. The server may
+   * hold a value the grid doesn't show. Cleared only by a confirmed save or a
+   * load issued after that moment, never by anything the editor does.
+   */
+  unconfirmedAt: Record<number, number>
 }
 
 export type Action =
@@ -49,6 +66,7 @@ export type Action =
   | { type: 'fetchSucceeded'; key: string; issuedAt: number; response: CapacityResponse }
   | { type: 'fetchFailed'; key: string; issuedAt: number; error: string }
   | { type: 'saveConfirmed'; person: Person; confirmedAt: number }
+  | { type: 'saveUnconfirmed'; id: number; at: number }
 
 export const initialState: State = {
   requestedKey: null,
@@ -58,6 +76,7 @@ export const initialState: State = {
   data: null,
   people: {},
   confirmedAt: {},
+  unconfirmedAt: {},
 }
 
 // The database orders by name, but the Postgres image runs on musl, whose
@@ -85,11 +104,16 @@ export function capacityReducer(state: State, action: Action): State {
         const keepLocal = confirmed !== undefined && confirmed > action.issuedAt && p.id in people
         people[p.id] = { name: p.name, weeklyHours: keepLocal ? people[p.id].weeklyHours : p.weeklyHours }
       }
+      // A load sent after a save's outcome became unknown shows what the server holds.
+      const unconfirmedAt = Object.fromEntries(
+        Object.entries(state.unconfirmedAt).filter(([, at]) => at > action.issuedAt),
+      )
       return {
         ...state,
         loading: false,
         error: null,
         people,
+        unconfirmedAt,
         data: {
           key: action.key,
           weeks: action.response.weeks,
@@ -106,12 +130,17 @@ export function capacityReducer(state: State, action: Action): State {
 
     case 'saveConfirmed': {
       const { id, name, weeklyHours } = action.person
+      const { [id]: _known, ...unconfirmedAt } = state.unconfirmedAt
       return {
         ...state,
         people: { ...state.people, [id]: { name, weeklyHours } },
         confirmedAt: { ...state.confirmedAt, [id]: action.confirmedAt },
+        unconfirmedAt,
       }
     }
+
+    case 'saveUnconfirmed':
+      return { ...state, unconfirmedAt: { ...state.unconfirmedAt, [action.id]: action.at } }
   }
 }
 

@@ -72,3 +72,55 @@ test('an unusable URL range falls back to the default (this week + 7)', async ({
   await expect(page).toHaveURL(/from=2026-10-05&to=2026-11-29/)
   await expect(page.locator('thead th.week')).toHaveCount(8)
 })
+
+// A date input reports every half-typed year (0002, 0020, 0202…). Stopping
+// half-way through the year and leaving the field must not request one.
+test('a half-typed year is never requested', async ({ page }) => {
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  const requested: string[] = []
+  page.on('request', (req) => {
+    if (isCapacityGet(req)) requested.push(new URL(req.url()).search)
+  })
+  const from = page.getByLabel('From', { exact: true })
+  await from.focus()
+  await page.keyboard.type('03022', { delay: 80 })
+  await page.keyboard.press('Tab')
+  await page.waitForTimeout(1500)
+  expect(requested.filter((q) => /=0\d\d\d-/.test(q))).toEqual([])
+})
+
+test('a To date years ahead is shortened to the longest range, not an error', async ({ page }) => {
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  const to = page.getByLabel('To', { exact: true })
+  await to.focus()
+  await page.keyboard.type('01012029', { delay: 80 })
+  await page.keyboard.press('Enter')
+  await expect(page.locator('thead th.week')).toHaveCount(106)
+  await expect(page.locator('.banner')).toHaveCount(0)
+})
+
+// The 600 ms pause would apply the date anyway, so these check it happens well
+// before that: the trigger itself, not the timer.
+test('Enter applies a typed date at once, and the field then shows the applied range', async ({ page }) => {
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  const to = page.getByLabel('To', { exact: true })
+  await to.focus()
+  await page.keyboard.type('01282026')
+  await page.keyboard.press('Enter')
+  await expect(page).toHaveURL(/to=2026-02-01/, { timeout: 400 })
+  // (One Tab only reaches Chrome's calendar button, which is still part of the field.)
+  await to.blur()
+  // Once focus leaves, the field shows the applied Sunday, and follows navigation.
+  await expect(to).toHaveValue('2026-02-01')
+  await page.getByRole('button', { name: 'Next week' }).click()
+  await expect(to).toHaveValue('2026-02-08')
+})
+
+test('leaving the field applies a typed date at once', async ({ page }) => {
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  const to = page.getByLabel('To', { exact: true })
+  await to.focus()
+  await page.keyboard.type('01282026')
+  await to.blur()
+  await expect(page).toHaveURL(/to=2026-02-01/, { timeout: 400 })
+})

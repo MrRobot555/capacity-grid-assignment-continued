@@ -3,6 +3,7 @@ import type { CapacityResponse } from './api'
 import {
   allocationStatus,
   capacityReducer,
+  formatHours,
   initialState,
   parseWeeklyHours,
   type Action,
@@ -31,6 +32,15 @@ describe('allocationStatus', () => {
     expect(allocationStatus(40, 39.999)).toBe('full')
     expect(allocationStatus(40.004, 40)).toBe('full')
     expect(allocationStatus(40.01, 40)).toBe('over')
+  })
+
+  it('classifies the value it displays, half-hundredths included', () => {
+    // 20.005 is shown as "20": against 20 allocated that is full, not under.
+    expect(formatHours(20.005)).toBe('20')
+    expect(allocationStatus(20, 20.005)).toBe('full')
+    // 0.995 is shown as "0.99": against 1 allocated that is over.
+    expect(formatHours(0.995)).toBe('0.99')
+    expect(allocationStatus(1, 0.995)).toBe('over')
   })
 
   it('treats any allocation against zero capacity as over, without dividing', () => {
@@ -125,6 +135,35 @@ describe('capacityReducer', () => {
     )
     expect(state.data?.key).toBe('B')
     expect(state.people[4].weeklyHours).toBe(50)
+  })
+
+  it('keeps a person unconfirmed until a load issued after the uncertainty', () => {
+    const state = run(
+      { type: 'fetchStarted', key: 'A', issuedAt: 1 },
+      { type: 'saveUnconfirmed', id: 4, at: 2 },
+      { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) },
+    )
+    expect(state.unconfirmedAt[4]).toBe(2)
+    const later = [
+      { type: 'fetchStarted', key: 'A', issuedAt: 3 },
+      { type: 'fetchSucceeded', key: 'A', issuedAt: 3, response: response(50) },
+    ] as Action[]
+    expect(later.reduce(capacityReducer, state).unconfirmedAt[4]).toBeUndefined()
+  })
+
+  it('clears "unconfirmed" on a confirmed save, and nothing else does', () => {
+    const state = run(
+      { type: 'saveUnconfirmed', id: 4, at: 1 },
+      { type: 'fetchStarted', key: 'B', issuedAt: 2 },
+      { type: 'fetchFailed', key: 'B', issuedAt: 2, error: 'boom' },
+    )
+    expect(state.unconfirmedAt[4]).toBe(1)
+    const saved = capacityReducer(state, {
+      type: 'saveConfirmed',
+      person: { id: 4, name: 'Dee Okafor', weeklyHours: 40 },
+      confirmedAt: 3,
+    })
+    expect(saved.unconfirmedAt[4]).toBeUndefined()
   })
 
   it('takes the server value from a load sent after the save', () => {

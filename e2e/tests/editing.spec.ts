@@ -205,9 +205,9 @@ test("while a save is in flight, other people's capacity buttons are disabled", 
   await expect(capButton(page, 'Bo Lindqvist')).toBeEnabled()
 })
 
-// The editor used to autoFocus, which fired again whenever its virtualised row
-// remounted: scrolling back pulled focus out of wherever the manager was typing.
-test('scrolling back to an open editor does not take focus', async ({ page }) => {
+// The editor is a panel above the grid, not part of a row: scrolling or
+// filtering its row away can't unmount it, re-focus it or hide its error.
+test('scrolling away and back leaves the editor, and focus, where they were', async ({ page }) => {
   await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
   await openEditor(page, 'Ana Ferreira')
   const search = page.getByLabel('Find person')
@@ -215,11 +215,49 @@ test('scrolling back to an open editor does not take focus', async ({ page }) =>
 
   const scroller = page.locator('.scroller')
   await scroller.evaluate((el) => (el.scrollTop = 6000))
-  await expect(editorInput(page, 'Ana Ferreira')).toHaveCount(0) // her row is out of the window
-  await scroller.evaluate((el) => (el.scrollTop = 0))
   await expect(editorInput(page, 'Ana Ferreira')).toBeVisible()
+  await scroller.evaluate((el) => (el.scrollTop = 0))
 
   await expect(search).toBeFocused()
   await page.keyboard.type('dee')
   await expect(search).toHaveValue('dee')
+})
+
+test('a failed save whose row was scrolled away still shows its error', async ({ page }) => {
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  const hold = deferred()
+  await routeApi(page, async (route, req) => {
+    if (!isPatch(req)) return false
+    await hold.promise
+    await settle(() =>
+      route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"could not update person"}' }),
+    )
+    return true
+  })
+  await openEditor(page, 'Ana Ferreira')
+  await editorInput(page, 'Ana Ferreira').fill('50')
+  await editorInput(page, 'Ana Ferreira').press('Enter')
+  await expect(editor(page).getByRole('button', { name: 'Saving…' })).toBeVisible()
+  await page.locator('.scroller').evaluate((el) => (el.scrollTop = 15000))
+  hold.release()
+
+  await expect(editorHint(page)).toHaveText('Not saved. could not update person')
+  await expect(editorHint(page)).toBeInViewport()
+})
+
+test('a failed save stays visible when "Only over capacity" hides its row', async ({ page }) => {
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  await routeApi(page, async (route, req) => {
+    if (!isPatch(req)) return false
+    await route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"could not update person"}' })
+    return true
+  })
+  await openEditor(page, 'Ana Ferreira')
+  await editorInput(page, 'Ana Ferreira').fill('50')
+  await editorInput(page, 'Ana Ferreira').press('Enter')
+  await expect(editorHint(page)).toHaveText('Not saved. could not update person')
+  await page.getByLabel('Only over capacity').check()
+  await expect(page.locator('tbody th.name', { hasText: 'Ana Ferreira' })).toHaveCount(0)
+  await expect(editorHint(page)).toBeInViewport()
+  await expect(editorInput(page, 'Ana Ferreira')).toHaveValue('50')
 })

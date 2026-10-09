@@ -97,3 +97,19 @@ left unfinished. Append as you go; a line or two per entry is right.
 - The "flaky" browser test was a real bug. A Go context deadline doesn't stop Postgres: an UPDATE waiting behind a row lock committed after the API had already answered 503 "Not saved". The Go locked-row test sometimes left Cem at 21, so the browser suite, run right after it, failed. Fixed by letting Postgres enforce the limit (`statement_timeout`, set for the save's transaction only): when it cancels the statement, the transaction aborts and nothing is stored. The test now waits 500 ms after releasing the lock before checking. It failed 2/3 runs on the old code and passed 5/5 on the fix.
 - Lesson: "flaky" was the wrong word. Each failure was one run's leftover state breaking the next run's precondition. The clue was in the trace: Cem was at 21 *before* the browser test started.
 - Also closed my round-1 caveats, each with a test that fails on the old code. Running the hanging test against the old handler needed `go test -timeout`: killing its container released the lock and committed the abandoned save. I restored Cem and diffed every person against `db/seed.sql` afterwards.
+
+## Review round 2 → two redesigns (standing rule: a 3rd recurrence means redesign)
+
+- Round 2 reopened four round-1 items. My fixes had been applied where each bug was reported but not on the parallel paths. Counting per area across the register, two areas had come back five times each, so both were redesigned rather than patched again.
+- **Save outcome:**
+  - "Outcome unknown" is now per person, in the reducer. Only a confirmed save, or a load issued after the uncertainty, clears it.
+  - The range reloads the moment an outcome is unknown.
+  - While a person is unconfirmed, their capacity shows "?" and the "unchanged" shortcut is off.
+  - One function, `isDefiniteFailure`, decides every message.
+  - The API reports a COMMIT that got no answer as `stored: unknown`. Postgres refusing the COMMIT is still a definite failure.
+- **Editor:**
+  - It moved out of the virtualised rows into one panel above the grid. A row can unmount at any time; an editor inside one kept losing its focus, its error and its place.
+  - This removed the off-screen banner, "Show" and scroll-to-row.
+  - Focus moves only on the user's own actions, and returns to the row's button (or the grid region, if the row was filtered away) only if it was still in the editor.
+- Also: status, overage and text all round through one `hundredths()`. Gates were added for every round-2 test gap.
+- The save tests now use a small fake server with state. A mock that always answers 40 can't express "the save was stored but its answer was lost", which is exactly the case that matters.

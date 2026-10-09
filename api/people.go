@@ -24,6 +24,11 @@ const maxWeeklyHours = 168
 // so when the server gives up first the manager gets a definite "not saved".
 var updateTimeout = 10 * time.Second
 
+// errOutcomeUnknown marks a save whose COMMIT got no answer: the connection
+// failed after the COMMIT may have reached Postgres, so the value may or may
+// not be stored. The client must not be told "not saved".
+var errOutcomeUnknown = errors.New("the save may or may not have been stored")
+
 type person struct {
 	ID          int     `json:"id"`
 	Name        string  `json:"name"`
@@ -72,6 +77,14 @@ func (s *server) handleUpdatePerson(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "person not found")
 		return
 	}
+	if errors.Is(err, errOutcomeUnknown) {
+		log.Printf("update person %d: %v", id, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error":  "the save couldn't be confirmed",
+			"stored": "unknown",
+		})
+		return
+	}
 	if errors.As(err, &pgErr) && pgErr.Code == "57014" { // query_canceled: statement_timeout
 		log.Printf("update person %d: gave up after %v: %v", id, updateTimeout, err)
 		writeError(w, http.StatusServiceUnavailable, "the database didn't respond in time")
@@ -112,5 +125,19 @@ func (s *server) updateWeeklyHours(ctx context.Context, id int, hours float64) (
 		Scan(&p.ID, &p.Name, &p.WeeklyHours); err != nil {
 		return person{}, err
 	}
-	return p, tx.Commit(ctx)
+	return p, commitOutcome(tx.Commit(ctx))
+}
+
+// commitOutcome tells a COMMIT that Postgres refused (an error from Postgres:
+// nothing was stored) from one whose answer was lost (anything else, such as a
+// dropped connection: it may have been stored).
+func commitOutcome(err error) error {
+	if err == nil {
+		return nil
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return err
+	}
+	return fmt.Errorf("%w: %v", errOutcomeUnknown, err)
 }

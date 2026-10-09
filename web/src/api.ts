@@ -20,18 +20,27 @@ export type Person = { id: number; name: string; weeklyHours: number }
 /**
  * A failure with a message that can be shown to a manager as-is.
  *
- * `fromApi` is true only when our API itself answered with its JSON error. Then
- * we know what happened: the request was refused or failed, and nothing was
- * stored. Anything else — no answer, a timeout, a proxy's HTML error page —
- * leaves it unknown whether the server acted on the request.
+ * `fromApi` is true when our API itself answered with its JSON error.
+ * `outcomeUnknown` is true when even the API can't say whether it stored the
+ * value (its COMMIT got no answer: `"stored": "unknown"`).
  */
 export class ApiError extends Error {
   constructor(
     message: string,
     readonly fromApi = false,
+    readonly outcomeUnknown = false,
   ) {
     super(message)
   }
+}
+
+/**
+ * True when we know a failed save stored nothing: our API said so. Anything
+ * else — no answer, a timeout, a proxy's HTML error page, or the API itself
+ * unsure — leaves the server's state unknown.
+ */
+export function isDefiniteFailure(err: unknown): boolean {
+  return err instanceof ApiError && err.fromApi && !err.outcomeUnknown
 }
 
 /** How long a save waits for an answer. Longer than the API's own 10 s limit
@@ -53,8 +62,8 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   // answers with plain text or HTML, so a parse failure is not exceptional.
   const body: unknown = await res.json().catch(() => null)
   if (!res.ok) {
-    const message = (body as { error?: unknown } | null)?.error
-    if (typeof message === 'string') throw new ApiError(message, true)
+    const { error: message, stored } = (body ?? {}) as { error?: unknown; stored?: unknown }
+    if (typeof message === 'string') throw new ApiError(message, true, stored === 'unknown')
     throw new ApiError(`The server couldn't handle the request (${res.status}).`)
   }
   if (body === null) throw new ApiError('The server sent a response we could not read.')
