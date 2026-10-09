@@ -13,14 +13,12 @@ import (
 
 type server struct {
 	db *pgxpool.Pool
-	// saves remembers save outcomes for clients that lost an answer (saves.go).
+	// saves remembers saves by id, so a repeated save gets a definite answer (saves.go).
 	saves *saveRegistry
-	// instance names this process; sent on every response as Server-Instance.
-	instance string
 }
 
 func newServer(db *pgxpool.Pool) *server {
-	return &server{db: db, saves: newSaveRegistry(), instance: newInstanceID()}
+	return &server{db: db, saves: newSaveRegistry()}
 }
 
 func main() {
@@ -51,8 +49,7 @@ func main() {
 
 	// The scaffold used http.ListenAndServe, which has no timeouts: a client
 	// that sends headers slowly holds a connection open for ever. WriteTimeout
-	// must outlast the longest handler: a save (saveDeadline, 12 s) or a lookup
-	// waiting for one (lookupWait, 5 s).
+	// must outlast the longest handler, a save (saveDeadline, 12 s).
 	srv := &http.Server{
 		Addr:              ":8080",
 		Handler:           s.routes(),
@@ -70,11 +67,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/capacity", s.handleCapacity)
 	mux.HandleFunc("PATCH /api/people/{id}", s.handleUpdatePerson)
-	mux.HandleFunc("GET /api/saves/{id}", s.handleSaveOutcome)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Server-Instance", s.instance)
-		mux.ServeHTTP(w, r)
-	})
+	return mux
 }
 
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {

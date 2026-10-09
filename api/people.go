@@ -78,24 +78,20 @@ func (s *server) handleUpdatePerson(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A save may carry an id (Save-Id) so its outcome can be looked up later
-	// if the answer is lost (saves.go). A repeated id is answered from the record.
+	// A save may carry an id (Save-Id), so that a client that lost the answer
+	// can send it again and get a definite one (saves.go).
 	saveID := r.Header.Get("Save-Id")
+	rerunOfUnknown := false
 	if saveID != "" {
 		if !saveIDPattern.MatchString(saveID) {
 			writeError(w, http.StatusBadRequest, "Save-Id must be 8–64 letters, digits or dashes")
 			return
 		}
-		if prev, fresh := s.saves.begin(saveID, int(id)); !fresh {
-			switch prev.State {
-			case saveStored:
-				writeJSON(w, http.StatusOK, prev.Person)
-			case saveInProgress:
-				writeError(w, http.StatusConflict, "this save is already in progress")
-			default:
-				writeError(w, http.StatusConflict, "this save was given up on and was not stored")
+		if prev, known := s.saves.begin(saveID, int(id), hours); known {
+			if replay(w, prev, int(id), hours) {
+				return
 			}
-			return
+			rerunOfUnknown = true
 		}
 	}
 
@@ -108,18 +104,25 @@ func (s *server) handleUpdatePerson(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("update person %d: %v", id, err)
 		status, body := saveErrorResponse(err)
+		if rerunOfUnknown && body["stored"] != "unknown" {
+			// This run failed for certain, but an earlier one may have committed.
+			status, body = http.StatusInternalServerError, map[string]string{
+				"error":  "the save couldn't be confirmed",
+				"stored": "unknown",
+			}
+		}
 		if saveID != "" {
-			state := saveNotStored
+			state := saveRefused
 			if body["stored"] == "unknown" {
 				state = saveUnknown
 			}
-			s.saves.finish(saveID, state, nil)
+			s.saves.finish(saveID, state, person{})
 		}
 		writeJSON(w, status, body)
 		return
 	}
 	if saveID != "" {
-		s.saves.finish(saveID, saveStored, &p)
+		s.saves.finish(saveID, saveStored, p)
 	}
 	writeJSON(w, http.StatusOK, p)
 }
@@ -131,10 +134,6 @@ func (s *server) handleUpdatePerson(w http.ResponseWriter, r *http.Request) {
 // stop waiting: an UPDATE queued behind a row lock would still run and commit
 // once the lock was released, after we had answered "not saved". When Postgres
 // cancels the statement instead, the transaction is aborted and nothing is stored.
-//
-// If the answer to COMMIT is lost, the transaction's id is used to ask
-// Postgres whether it committed (pg_xact_status, made for exactly this), so
-// even that case usually gets a definite answer.
 func (s *server) updateWeeklyHours(ctx context.Context, id int, hours float64) (person, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -143,10 +142,7 @@ func (s *server) updateWeeklyHours(ctx context.Context, id int, hours float64) (
 	defer tx.Rollback(ctx)
 
 	timeout := fmt.Sprintf("%dms", updateTimeout.Milliseconds())
-	var xid string
-	if err := tx.QueryRow(ctx,
-		`SELECT pg_current_xact_id()::text FROM set_config('statement_timeout', $1, true)`, timeout).
-		Scan(&xid); err != nil {
+	if _, err := tx.Exec(ctx, `SELECT set_config('statement_timeout', $1, true)`, timeout); err != nil {
 		return person{}, err
 	}
 	var p person
@@ -157,13 +153,7 @@ func (s *server) updateWeeklyHours(ctx context.Context, id int, hours float64) (
 		Scan(&p.ID, &p.Name, &p.WeeklyHours); err != nil {
 		return person{}, err
 	}
-	if err := commitOutcome(tx.Commit(ctx)); errors.Is(err, errOutcomeUnknown) {
-		// The outcome is already settled by now: Commit hands the connection
-		// back, and pgxpool destroys a connection that is closed, busy or still
-		// in a transaction. A COMMIT that reached Postgres completes anyway; a
-		// transaction it never received is aborted by the disconnect.
-		return p, s.committedAfterAll(xid, err)
-	} else if err != nil {
+	if err := commitOutcome(tx.Commit(ctx)); err != nil {
 		return person{}, err
 	}
 	return p, nil
@@ -171,7 +161,8 @@ func (s *server) updateWeeklyHours(ctx context.Context, id int, hours float64) (
 
 // commitOutcome tells a COMMIT that Postgres refused (an error from Postgres:
 // nothing was stored) from one whose answer was lost (anything else, such as a
-// dropped connection or the save's deadline: it may have been stored).
+// dropped connection or the save's deadline: it may have been stored). The
+// client settles the latter by sending the same save again (saves.go).
 func commitOutcome(err error) error {
 	if err == nil {
 		return nil
@@ -181,38 +172,6 @@ func commitOutcome(err error) error {
 		return err
 	}
 	return fmt.Errorf("%w: %v", errOutcomeUnknown, err)
-}
-
-// errCommitAborted: the COMMIT's answer was lost, and Postgres says the
-// transaction did not commit. A definite "not stored".
-var errCommitAborted = errors.New("the transaction did not commit")
-
-// committedAfterAll asks Postgres, on a fresh connection, what became of a
-// transaction whose COMMIT got no answer. It returns nil if it committed,
-// errCommitAborted if it didn't, and the original error (still unknown) if
-// Postgres can't be asked.
-func (s *server) committedAfterAll(xid string, lost error) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	for {
-		var status *string
-		err := s.db.QueryRow(ctx, `SELECT pg_xact_status($1::xid8)`, xid).Scan(&status)
-		switch {
-		case err != nil:
-			return fmt.Errorf("%w (asking Postgres failed: %v)", lost, err)
-		case status != nil && *status == "committed":
-			return nil
-		case status != nil && *status == "aborted":
-			return fmt.Errorf("%w: %v", errCommitAborted, lost)
-		}
-		// "in progress": the COMMIT (or the abort of a dropped connection) is
-		// still being processed. Ask again shortly.
-		select {
-		case <-ctx.Done():
-			return lost
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
 }
 
 // saveErrorResponse says what a failed save tells the client. Only "stored":

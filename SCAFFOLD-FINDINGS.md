@@ -23,25 +23,34 @@ sent. Then:
 - **refetch** can read the old value just before the save commits: a proxy
   can give up while the API is still working.
 
-The scaffold's API gave a client no way to find out. Four review rounds kept
-finding new ways for the grid to show a value the server didn't hold, until the
-server was made able to answer the question:
+The scaffold's API gave a client no way to settle the question. This
+repository got there the long way. Three review rounds added machinery to
+*track* the doubt (per-person state, a server-side outcome registry with
+lookups and fencing, `pg_xact_status`, cross-tab polling), and each layer brought
+new defects. The fifth round replaced all of it with the simpler model the
+problem had all along:
 
-- every save carries a client-chosen **`Save-Id`**; the API records each
-  outcome and answers `GET /api/saves/{id}` (`api/saves.go`);
-- an id the API has never seen is **fenced**, so if that request turns up
-  later it is refused, and "not stored" stays true;
-- when the API loses the answer to its own `COMMIT`, it asks Postgres with
-  **`pg_xact_status`**, the feature Postgres has for exactly this;
-- `GET /api/capacity` marks people with a save **in progress**, so other tabs
-  and other managers see the value as unsettled, not as fact.
+- **a save sets an absolute value, so it is idempotent.** Every save carries a
+  client-chosen **`Save-Id`**. When an attempt gets no definite answer, the
+  client sends the *identical* request again, until it gets one (up to 5
+  attempts, with "?" shown meanwhile);
+- **the API recognises a repeat** (`api/saves.go`). A repeat of a stored save
+  is answered from the record, so it never re-applies an old value over a
+  newer change. A repeat of a refused save is refused, so a late duplicate
+  can't contradict "not saved". A repeat of a save with an unknown outcome
+  simply runs again;
+- **a definite answer to a repeat is never applied as the new value**: it may
+  be the record of an earlier attempt. The client reloads instead.
 
-**Shown by:** `api/saves_test.go`, and `TestUpdatePersonResolvesALostCommitAnswer`
-(a TCP proxy forwards `COMMIT` to Postgres and drops the answer; the API
-answers 200 with the stored value). In the browser,
-`e2e/tests/editing.spec.ts` has "a save whose answer is lost is found to be
-stored": the request reaches the real API, the browser loses the answer, and
-the grid learns from the API that the save went through.
+**Shown by:**
+- `TestLostCommitIsUnknownAndARepeatSettlesIt`. A TCP proxy loses the outcome
+  of `COMMIT` three ways (answer lost, `COMMIT` never delivered, answer held
+  past the deadline). The API says `stored: unknown` each time, and the repeat
+  settles it with a definite 200.
+- `api/saves_test.go`.
+- In the browser, `e2e/tests/editing.spec.ts`: "a save whose answer is lost is
+  found to be stored" (the repeat is answered from the API's record) and "a
+  save cut off before reaching the server is sent again and stored".
 
 ## 2. The database image sorts names by byte, whatever its locale says
 
@@ -98,8 +107,9 @@ schema is fixed.
 
 `people` has no version or `updated_at`. When two managers edit the same
 person, the last write wins and the first manager is never told. This
-repository narrows the window (in-progress saves are visible to every client)
-but can't close it without a column.
+repository can't close that without a column; a manager also doesn't see
+another manager's change, or a save still being retried in another tab, until
+the grid reloads.
 **The scaffold needs:** a `version` column, `If-Match` on `PATCH`, and a 412
 answer the editor can show as "changed by someone else".
 
@@ -117,8 +127,8 @@ answer the editor can show as "changed by someone else".
 
 - Every assignment is stored as **15 rows** that must be summed: 14 × h plus 1 × 2h.
   Reading one row, or de-duplicating, gives a fraction of the real hours.
-- `hours_per_day` applies to **working days**, but 3,111 assignments run into
-  a weekend. Counting calendar days instead of Monday to Friday reports
+- `hours_per_day` applies to **working days**, but 6,883 of the 8,413
+  assignments span a weekend (3,111 even end on one). Counting calendar days instead of Monday to Friday reports
   **4,779** over-allocated person-weeks instead of **1,626**: nearly three times
   as many false alarms.
 - Every third week is empty, an artefact of the generator. This includes the
@@ -130,7 +140,7 @@ day-by-day oracle (`TestCapacityMatchesDayByDayOracle`).
 
 ---
 
-*How these were found:* data probing before any code, then four rounds of
+*How these were found:* data probing before any code, then five rounds of
 review by two independent reviewers (one adversarial with reproductions, one
 auditing the tests by mutation), each finding recorded with a verdict in
 `.notes/review-register.md`.

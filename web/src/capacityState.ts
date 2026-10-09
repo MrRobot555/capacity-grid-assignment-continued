@@ -1,4 +1,4 @@
-import type { CapacityResponse, Person, SaveOutcome } from './api'
+import type { CapacityResponse, Person } from './api'
 import type { ISODate } from './dates'
 
 // The grid's data, as a reducer so the rules that keep it honest are testable
@@ -28,20 +28,17 @@ export function formatHours(hours: number): string {
 
 /**
  * How sure the grid can be about a person's capacity:
- *  - 'certain': the last value the server confirmed;
- *  - 'checking': a save of ours got no answer, and we are asking the server
- *    what became of it (lookupSave);
- *  - 'unknown': the server can't tell (it restarted meanwhile, or lost touch
- *    with the database at the moment of COMMIT);
- *  - 'saving': the server says a save for this person is in progress,
- *    whoever sent it (another tab, another manager).
+ *  - 'certain':  the last value the server confirmed (or loaded after it);
+ *  - 'retrying': a save of ours got no definite answer and is being sent
+ *    again, or was just confirmed by a repeat and the range is reloading;
+ *  - 'unknown':  we stopped sending it without a definite answer.
  */
-export type Certainty = 'certain' | 'checking' | 'unknown' | 'saving'
+export type Certainty = 'certain' | 'retrying' | 'unknown'
 
 /**
  * How to show a person's capacity, and how sure we are about it. Every place
  * that shows a person's capacity uses this (button, its accessible name, its
- * tooltip, cell tooltips, the editor's title and hint), so none of them can
+ * tooltip, cell tooltips, the editor's title and notes), so none of them can
  * claim more than is known. Figures derived from capacities (the summary, the
  * week headers' "over" counts) are qualified in the summary instead.
  */
@@ -54,10 +51,9 @@ export type CapacityView = {
 }
 
 const NOTES: Record<Exclude<Certainty, 'certain'>, string> = {
-  checking: 'The last save got no answer. Checking with the server whether it went through…',
+  retrying: 'The last save got no answer yet. Sending it again until the server answers…',
   unknown:
-    "The last save couldn't be confirmed (the server can't tell whether it went through), so it may hold a different value. Saving again is safe and confirms it.",
-  saving: 'A save for this person is in progress on the server, so this value may be about to change.',
+    "The last save couldn't be confirmed, so the server may hold a different value. Saving again is safe and confirms it.",
 }
 
 export function capacityView(weeklyHours: number, certainty: Certainty): CapacityView {
@@ -66,11 +62,10 @@ export function capacityView(weeklyHours: number, certainty: Certainty): Capacit
   return { text, certain: false, note: NOTES[certainty] }
 }
 
-/** The certainty of one person's capacity, from what the state knows. */
-export function certaintyOf(state: Pick<State, 'unsure' | 'people'>, id: number): Certainty {
+export function certaintyOf(state: Pick<State, 'unsure'>, id: number): Certainty {
   const unsure = state.unsure[id]
-  if (unsure) return unsure.checking ? 'checking' : 'unknown'
-  return state.people[id]?.saving ? 'saving' : 'certain'
+  if (!unsure) return 'certain'
+  return unsure.state === 'unknown' ? 'unknown' : 'retrying'
 }
 
 export function allocationStatus(allocated: number, capacity: number): Status {
@@ -88,6 +83,16 @@ export type Loaded = {
   rows: { id: number; allocated: number[] }[]
 }
 
+/**
+ * Doubt about one person's capacity.
+ *  - 'retrying': our save is being sent again;
+ *  - 'settled': a repeat got a definite answer, so the save is finished, and
+ *    a load issued after `at` shows the truth;
+ *  - 'unknown': we gave up without a definite answer. Only a confirmed save
+ *    clears it: a load can't, because a lost save may still be on its way.
+ */
+type Unsure = { state: 'retrying' } | { state: 'settled'; at: number } | { state: 'unknown' }
+
 export type State = {
   /** The range the grid is asking for. */
   requestedKey: string | null
@@ -97,33 +102,23 @@ export type State = {
   error: string | null
   /** The last range that loaded. Kept on screen while the next one loads or fails. */
   data: Loaded | null
-  /** `saving`: the server says a save for this person is in progress. */
-  people: Record<number, { name: string; weeklyHours: number; saving: boolean }>
+  people: Record<number, { name: string; weeklyHours: number }>
   /** When each person's latest save was confirmed, on the same clock as `issuedAt`. */
   confirmedAt: Record<number, number>
-  /**
-   * People whose last save got no definite answer: which save, and whether we
-   * are still asking the server about it. A load never clears this (a proxy
-   * can give up while the API is still saving, so a load can read the old
-   * value just before the save commits). Only the server's answer about that
-   * save does, or a later save of the person that is confirmed.
-   */
-  unsure: Record<number, { saveId: string; checking: boolean }>
-  /** The API process that answered the last load (to look saves up with). */
-  instance: string | null
-  /** What the server said about saves whose answer was lost, by save id. */
-  outcomes: Record<string, 'stored' | 'not-stored' | 'unknown'>
+  unsure: Record<number, Unsure>
 }
 
 export type Action =
-  /** `quiet`: a background refresh, which doesn't dim the grid. */
-  | { type: 'fetchStarted'; key: string; issuedAt: number; quiet?: boolean }
+  | { type: 'fetchStarted'; key: string; issuedAt: number }
   | { type: 'fetchSucceeded'; key: string; issuedAt: number; response: CapacityResponse }
   | { type: 'fetchFailed'; key: string; issuedAt: number; error: string }
+  /** A save answered at the first attempt: its payload is the stored row. */
   | { type: 'saveConfirmed'; person: Person; confirmedAt: number }
-  | { type: 'saveUnconfirmed'; id: number; saveId: string }
-  /** The server's answer about a save whose own answer was lost. */
-  | { type: 'saveResolved'; id: number; saveId: string; outcome: SaveOutcome; at: number }
+  | { type: 'saveRetrying'; id: number }
+  /** A repeat got a definite answer. Its payload may be an old record, so it is
+   * not applied: the range reloads, and the load shows what the server holds. */
+  | { type: 'saveSettled'; id: number; at: number }
+  | { type: 'saveGaveUp'; id: number }
 
 export const initialState: State = {
   requestedKey: null,
@@ -134,8 +129,6 @@ export const initialState: State = {
   people: {},
   confirmedAt: {},
   unsure: {},
-  instance: null,
-  outcomes: {},
 }
 
 // The database orders by name, but the Postgres image runs on musl, whose
@@ -149,13 +142,7 @@ export function rangeKey(from: ISODate, to: ISODate): string {
 export function capacityReducer(state: State, action: Action): State {
   switch (action.type) {
     case 'fetchStarted':
-      return {
-        ...state,
-        requestedKey: action.key,
-        requestedAt: action.issuedAt,
-        loading: action.quiet ? state.loading : true,
-        error: action.quiet ? state.error : null,
-      }
+      return { ...state, requestedKey: action.key, requestedAt: action.issuedAt, loading: true, error: null }
 
     case 'fetchSucceeded': {
       // Matching the request, not just the range: after A → B → A, the first
@@ -167,18 +154,18 @@ export function capacityReducer(state: State, action: Action): State {
         // weekly hours. The confirmed save is newer, so it wins.
         const confirmed = state.confirmedAt[p.id]
         const keepLocal = confirmed !== undefined && confirmed > action.issuedAt && p.id in people
-        people[p.id] = {
-          name: p.name,
-          weeklyHours: keepLocal ? people[p.id].weeklyHours : p.weeklyHours,
-          saving: p.saving === true,
-        }
+        people[p.id] = { name: p.name, weeklyHours: keepLocal ? people[p.id].weeklyHours : p.weeklyHours }
       }
+      // A load issued after a save was settled shows that save's outcome.
+      const unsure = Object.fromEntries(
+        Object.entries(state.unsure).filter(([, u]) => !(u.state === 'settled' && u.at < action.issuedAt)),
+      )
       return {
         ...state,
         loading: false,
         error: null,
         people,
-        instance: action.response.instance ?? state.instance,
+        unsure,
         data: {
           key: action.key,
           weeks: action.response.weeks,
@@ -193,35 +180,24 @@ export function capacityReducer(state: State, action: Action): State {
       if (action.issuedAt !== state.requestedAt) return state
       return { ...state, loading: false, error: action.error }
 
-    case 'saveConfirmed':
-      return confirm(state, action.person, action.confirmedAt)
-
-    case 'saveUnconfirmed':
-      return { ...state, unsure: { ...state.unsure, [action.id]: { saveId: action.saveId, checking: true } } }
-
-    case 'saveResolved': {
-      const { outcome } = action
-      if (outcome.state === 'in-progress') return state
-      state = { ...state, outcomes: { ...state.outcomes, [action.saveId]: outcome.state } }
-      // Only the save the person is unsure about; a later one may have settled it.
-      if (state.unsure[action.id]?.saveId !== action.saveId) return state
-      if (outcome.state === 'stored') return confirm(state, outcome.person, action.at)
-      if (outcome.state === 'not-stored') return { ...state, unsure: without(state.unsure, action.id) }
-      if (outcome.state === 'unknown') {
-        return { ...state, unsure: { ...state.unsure, [action.id]: { saveId: action.saveId, checking: false } } }
+    case 'saveConfirmed': {
+      const { id, name, weeklyHours } = action.person
+      return {
+        ...state,
+        people: { ...state.people, [id]: { name, weeklyHours } },
+        confirmedAt: { ...state.confirmedAt, [id]: action.confirmedAt },
+        unsure: without(state.unsure, id),
       }
-      return state
     }
-  }
-}
 
-function confirm(state: State, person: Person, at: number): State {
-  const { id, name, weeklyHours } = person
-  return {
-    ...state,
-    people: { ...state.people, [id]: { name, weeklyHours, saving: state.people[id]?.saving ?? false } },
-    confirmedAt: { ...state.confirmedAt, [id]: at },
-    unsure: without(state.unsure, id),
+    case 'saveRetrying':
+      return { ...state, unsure: { ...state.unsure, [action.id]: { state: 'retrying' } } }
+
+    case 'saveSettled':
+      return { ...state, unsure: { ...state.unsure, [action.id]: { state: 'settled', at: action.at } } }
+
+    case 'saveGaveUp':
+      return { ...state, unsure: { ...state.unsure, [action.id]: { state: 'unknown' } } }
   }
 }
 

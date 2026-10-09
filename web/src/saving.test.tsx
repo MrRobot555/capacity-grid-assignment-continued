@@ -1,72 +1,59 @@
 import '@testing-library/jest-dom/vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CapacityGrid } from './CapacityGrid'
+import { retryTiming, SAVE_ATTEMPTS } from './useCapacity'
 
 // What the manager is told after a save, what the grid shows, and where focus
-// goes. The rule: "Not saved" only when the server said nothing was stored.
-// When an answer is lost, the grid asks the server what became of that save
-// (its Save-Id) and shows "?" until the server answers.
+// goes. "Not saved" only when the server said nothing was stored. When an
+// answer is lost, the identical request (same Save-Id) is sent again until a
+// definite answer; a definite answer to a repeat is never applied as the new
+// value (it may be old): the range reloads instead.
 //
-// A fake server with state, modelling the API's save-outcome registry
-// (api/saves.go): outcomes recorded by Save-Id, unseen ids fenced on lookup,
-// "unknown" for saves sent to an earlier process.
+// A fake server with state, modelling the API's repeat handling
+// (api/saves.go): a repeat of a stored save is answered from the record, of a
+// refused one is refused, of one with an unknown outcome runs again.
 
 type Outcome =
   | 'store' // store it and answer 200
   | 'store-and-lose-answer' // store it, then the connection drops
   | 'lose-request' // the request never reaches the API
   | 'refuse' // our API's JSON 500: nothing stored
-  | 'commit-unknown' // stored, but the API couldn't tell (lost contact with Postgres)
+  | 'commit-unknown' // stored, but the API couldn't tell (its COMMIT got no answer)
   | 'html-500' // a proxy's error page after the API stored it
   | 'timeout' // stored, but the client gave up waiting
-  | 'hold' // answers only when released
+  | 'no-answer' // the client gave up waiting, and nothing was stored
+  | 'hold' // stores and answers only when released
 
-type SaveRecord = { state: 'stored' | 'not-stored' | 'unknown'; person?: { id: number; name: string; weeklyHours: number } }
+type Row = { id: number; name: string; weeklyHours: number }
+type SaveRecord = { state: 'stored' | 'refused' | 'unknown'; person?: Row; id: number; value: number }
 
-function fakeServer(outcomes: Outcome[], options: { saving?: number[] } = {}) {
+function fakeServer(outcomes: Outcome[]) {
   const hours: Record<number, number> = { 1: 40, 4: 40 }
   const names: Record<number, string> = { 1: 'Ana Ferreira', 4: 'Dee Okafor' }
   const allocated: Record<number, number[]> = { 1: [0, 30], 4: [45, 40] }
-  let instance = 'process-1'
-  let records = new Map<string, SaveRecord>()
-  let saving = new Set(options.saving ?? [])
-  let failLoads = false
-  let failLookups = false
+  const records = new Map<string, SaveRecord>()
   let release: (() => void) | null = null
   const json = (status: number, body: unknown) =>
-    new Response(JSON.stringify(body), {
-      status,
-      headers: { 'Content-Type': 'application/json', 'Server-Instance': instance },
-    })
-  const person = (id: number) => ({ id, name: names[id], weeklyHours: hours[id] })
+    new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+  const person = (id: number): Row => ({ id, name: names[id], weeklyHours: hours[id] })
 
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-    const path = url.split('?')[0]
-    if (path.startsWith('/api/saves/')) {
-      if (failLookups) return new Response('<html>Bad Gateway</html>', { status: 502 })
-      const id = decodeURIComponent(path.split('/').pop()!)
-      const asked = new URLSearchParams(url.split('?')[1]).get('instance')
-      const rec = records.get(id)
-      if (rec) return json(200, rec)
-      if (asked !== instance) return json(200, { state: 'unknown' })
-      records.set(id, { state: 'not-stored' }) // fenced
-      return json(200, { state: 'not-stored' })
-    }
     if (init?.method !== 'PATCH') {
-      if (failLoads) return new Response('<html>Bad Gateway</html>', { status: 502 })
       return json(200, {
         weeks: ['2026-01-05', '2026-01-12'],
-        people: [1, 4].map((id) => ({ ...person(id), allocated: allocated[id], saving: saving.has(id) || undefined })),
+        people: [1, 4].map((id) => ({ ...person(id), allocated: allocated[id] })),
       })
     }
-    const id = Number(path.split('/').pop())
+    const id = Number(url.split('/').pop())
     const saveId = new Headers(init.headers).get('Save-Id')!
     const value = JSON.parse(String(init.body)).weeklyHours as number
-    if (records.has(saveId)) return json(409, { error: 'this save was given up on and was not stored' })
+    const prev = records.get(saveId)
+    if (prev?.state === 'stored') return json(200, prev.person) // a repeat, answered from the record
+    if (prev?.state === 'refused') return json(409, { error: 'this save was already refused and was not stored' })
     const store = () => {
       hours[id] = value
-      records.set(saveId, { state: 'stored', person: person(id) })
+      records.set(saveId, { state: 'stored', person: person(id), id, value })
     }
     const outcome = outcomes.shift() ?? 'store'
     switch (outcome) {
@@ -79,17 +66,19 @@ function fakeServer(outcomes: Outcome[], options: { saving?: number[] } = {}) {
       case 'lose-request':
         throw new TypeError('Failed to fetch')
       case 'refuse':
-        records.set(saveId, { state: 'not-stored' })
+        records.set(saveId, { state: 'refused', id, value })
         return json(500, { error: 'could not update person' })
       case 'commit-unknown':
         hours[id] = value
-        records.set(saveId, { state: 'unknown' })
+        records.set(saveId, { state: 'unknown', id, value })
         return json(500, { error: "the save couldn't be confirmed", stored: 'unknown' })
       case 'html-500':
         store()
         return new Response('<html>Internal Server Error</html>', { status: 500 })
       case 'timeout':
         store()
+        throw new DOMException('signal timed out', 'TimeoutError')
+      case 'no-answer':
         throw new DOMException('signal timed out', 'TimeoutError')
       case 'hold':
         await new Promise<void>((resolve) => (release = resolve))
@@ -98,19 +87,13 @@ function fakeServer(outcomes: Outcome[], options: { saving?: number[] } = {}) {
     }
   })
   vi.stubGlobal('fetch', fetchMock)
-  const calls = (pred: (url: string, init?: RequestInit) => boolean) =>
-    fetchMock.mock.calls.filter(([url, init]) => pred(url, init))
   return {
     hours,
-    patches: () => calls((_, init) => init?.method === 'PATCH'),
-    lookups: () => calls((url) => url.startsWith('/api/saves/')).length,
-    failLoads: (fail: boolean) => (failLoads = fail),
-    failLookups: (fail: boolean) => (failLookups = fail),
-    restart: () => {
-      instance = 'process-2'
-      records = new Map()
-    },
-    stopSaving: () => (saving = new Set()),
+    patches: () => fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH'),
+    saveIds: () =>
+      fetchMock.mock.calls
+        .filter(([, init]) => init?.method === 'PATCH')
+        .map(([, init]) => new Headers(init?.headers).get('Save-Id')),
     release: () => release?.(),
   }
 }
@@ -132,46 +115,58 @@ function renderGrid() {
   return render(<CapacityGrid from="2026-01-05" to="2026-01-18" onRangeChange={() => {}} />)
 }
 
+const realDelay = retryTiming.delay
+beforeEach(() => {
+  retryTiming.delay = () => 5
+})
 afterEach(() => {
+  retryTiming.delay = realDelay
   cleanup()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
 
 describe('what a failed save says', () => {
-  it('says "Not saved" when our API refused it, without asking again', async () => {
+  it('says "Not saved" when our API refused it, and does not send it again', async () => {
     const server = fakeServer(['refuse'])
     renderGrid()
     await edit('Dee Okafor', '50')
     expect(await screen.findByRole('alert')).toHaveTextContent('Not saved. could not update person')
-    expect(server.lookups()).toBe(0)
+    expect(server.patches()).toHaveLength(1)
   })
 
   it.each([
     ['the answer is lost', 'store-and-lose-answer' as Outcome],
+    ['the request never arrives', 'lose-request' as Outcome],
     ["a proxy's HTML page answers, even with a 500", 'html-500' as Outcome],
     ['the save times out', 'timeout' as Outcome],
     ['our API itself cannot tell (lost COMMIT)', 'commit-unknown' as Outcome],
-  ])('never says "Not saved" when %s', async (_, outcome) => {
+  ])('sends the same save again when %s, and never says "Not saved"', async (_, outcome) => {
     const server = fakeServer([outcome])
-    server.failLookups(true) // keep it at the first answer
+    renderGrid()
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    expect(screen.queryByText(/Not saved/)).not.toBeInTheDocument()
+    const ids = server.saveIds()
+    expect(ids).toHaveLength(2)
+    expect(ids[1]).toBe(ids[0]) // the identical request, so the API can recognise the repeat
+    expect(server.hours[4]).toBe(50)
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/))
+  })
+
+  it(`gives up after ${SAVE_ATTEMPTS} attempts without a definite answer, and says so`, async () => {
+    const server = fakeServer(Array(SAVE_ATTEMPTS).fill('no-answer'))
     renderGrid()
     await edit('Dee Okafor', '50')
     const alert = await screen.findByRole('alert')
-    expect(alert).toHaveTextContent("Couldn't confirm the save yet")
+    expect(alert).toHaveTextContent(`Couldn't confirm the save after ${SAVE_ATTEMPTS} tries`)
+    expect(alert).toHaveTextContent("didn't answer within 15 seconds")
     expect(alert).not.toHaveTextContent('Not saved')
-  })
-
-  it('names the timeout, and lets the manager cancel', async () => {
-    const server = fakeServer(['timeout'])
-    server.failLookups(true)
-    renderGrid()
-    await edit('Dee Okafor', '50')
-    expect(await screen.findByRole('alert')).toHaveTextContent("didn't answer within 15 seconds")
+    expect(server.patches()).toHaveLength(SAVE_ATTEMPTS)
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled()
   })
 
-  it('gives a save 15 seconds, longer than the API gives it (12 s)', async () => {
+  it('gives each attempt 15 seconds, longer than the API gives it (12 s)', async () => {
     const timeout = vi.spyOn(AbortSignal, 'timeout')
     fakeServer(['store'])
     renderGrid()
@@ -179,124 +174,101 @@ describe('what a failed save says', () => {
     await waitFor(() => expect(timeout).toHaveBeenCalledWith(15_000))
   })
 
-  it('names every save, with a new name for every attempt', async () => {
+  it('names every new save differently', async () => {
     const server = fakeServer(['refuse', 'store'])
     renderGrid()
     await edit('Dee Okafor', '50')
     await screen.findByRole('alert')
     await edit('Dee Okafor', '50')
     await waitFor(() => expect(server.patches()).toHaveLength(2))
-    const ids = server.patches().map(([, init]) => new Headers(init?.headers).get('Save-Id'))
-    expect(ids[0]).toBeTruthy()
-    expect(ids[1]).toBeTruthy()
-    expect(ids[0]).not.toBe(ids[1])
-  })
-})
-
-describe('after a save with no definite answer', () => {
-  it('asks the server, and closes the editor when the save went through after all', async () => {
-    const server = fakeServer(['store-and-lose-answer'])
-    renderGrid()
-    await edit('Dee Okafor', '50')
-    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
-    expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/)
-    expect(server.patches()).toHaveLength(1)
-    expect(server.lookups()).toBe(1)
+    const [first, second] = server.saveIds()
+    expect(first).toBeTruthy()
+    expect(second).not.toBe(first)
   })
 
-  it('says "Not saved" for certain when the server never got the save, and fences it', async () => {
-    const server = fakeServer(['lose-request'])
+  // Served over plain HTTP on a network address (not localhost), the page is
+  // not a secure context and crypto.randomUUID doesn't exist.
+  it('saves without crypto.randomUUID', async () => {
+    vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) })
+    const server = fakeServer(['store'])
     renderGrid()
-    await edit('Dee Okafor', '50')
-    expect(await screen.findByText('Not saved. The server confirmed this save did not go through.')).toBeInTheDocument()
-    expect(capButton('Dee Okafor')).toHaveTextContent(/^40h$/)
-    expect(server.hours[4]).toBe(40)
-    // A new attempt is a new save, so it isn't caught by the fence.
     await edit('Dee Okafor', '50')
     await waitFor(() => expect(server.hours[4]).toBe(50))
   })
 
-  it('shows "?" and blocks another save of that person while it is checking', async () => {
-    const server = fakeServer(['store-and-lose-answer'])
-    server.failLookups(true)
+  it('ends the save with a message if something throws before it is sent', async () => {
+    fakeServer([])
+    vi.stubGlobal('crypto', {
+      getRandomValues: () => {
+        throw new Error('no randomness here')
+      },
+    })
     renderGrid()
     await edit('Dee Okafor', '50')
-    await screen.findByRole('alert')
+    expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong before the save was sent')
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled()
+  })
+})
 
-    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent('50h ?'))
+describe('while a save is being sent again', () => {
+  it('shows "?" and says why, and keeps every editor closed to new saves', async () => {
+    // The first attempt never arrives, so the repeat runs (and is held).
+    const server = fakeServer(['lose-request', 'hold'])
+    renderGrid()
+    await edit('Dee Okafor', '50')
+
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent('40h ?'))
     expect(capButton('Dee Okafor')).toHaveAccessibleName(/last save not confirmed/)
-    expect(capButton('Dee Okafor')).toHaveAttribute('title', expect.stringMatching(/Checking with the server/))
+    expect(capButton('Dee Okafor')).toHaveAttribute('title', expect.stringMatching(/Sending it again/))
     const deeCell = within(row('Dee Okafor')).getAllByRole('cell')[1]
     expect(deeCell).toHaveAttribute('title', expect.stringContaining('(capacity not confirmed)'))
     expect(screen.getByText(/people over capacity/)).toHaveTextContent('(1 with a capacity not yet confirmed, marked ?)')
+    expect(screen.getByText('Changes capacity for every week, past and future.')).toBeInTheDocument()
+    expect(screen.getByText(/Sending it again/, { selector: '.cap-editor p' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Saving…' })).toHaveAttribute('aria-disabled', 'true')
+    expect(capButton('Ana Ferreira')).toBeDisabled()
 
-    // Retrying now could race the save the server is still settling.
-    fireEvent.submit(screen.getByLabelText('Weekly hours for Dee Okafor').closest('form')!)
-    expect(server.patches()).toHaveLength(1)
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    expect(capButton('Dee Okafor')).toBeDisabled()
+    await act(async () => server.release())
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/))
   })
 
-  it('keeps the doubt when the server cannot tell, until a save of that person is confirmed', async () => {
-    const server = fakeServer(['store-and-lose-answer', 'refuse', 'store', 'store'])
-    renderGrid()
-    await screen.findByText('Dee Okafor', { selector: 'th' })
-    server.failLoads(true) // so the grid keeps showing 40
+  // The answer to a repeat can be the API's record of an earlier attempt,
+  // older than a change someone made since. Applying it would show a stale
+  // value as confirmed; the reload shows what the server holds.
+  it('never applies a repeat answer as the new value', async () => {
+    const server = fakeServer(['store-and-lose-answer'])
     const original = vi.mocked(fetch).getMockImplementation()!
+    let patches = 0
     vi.mocked(fetch).mockImplementation(async (url, init) => {
-      try {
-        return await original(url, init)
-      } finally {
-        if (init?.method === 'PATCH') server.restart() // the API restarts before anyone can ask
-      }
+      if (init?.method === 'PATCH' && ++patches === 2) server.hours[4] = 30 // another manager, before the repeat
+      return original(url, init)
     })
+    renderGrid()
     await edit('Dee Okafor', '50')
-    expect(await screen.findByText(/can't tell whether it went through/)).toBeInTheDocument()
-    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent('40h ?'))
-    vi.mocked(fetch).mockImplementation(original)
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^30h$/))
+  })
+})
 
-    // A definite "Not saved" for a retry doesn't settle the earlier save...
+describe('after giving up', () => {
+  it('keeps "?" until a save of that person is confirmed, and a repeat of the old value reaches the server', async () => {
+    const server = fakeServer([...Array(SAVE_ATTEMPTS).fill('lose-request'), 'store', 'store'])
+    renderGrid()
     await edit('Dee Okafor', '50')
-    await screen.findByText(/Not saved. could not update person/)
+    await screen.findByText(/Couldn't confirm the save after/)
     expect(capButton('Dee Okafor')).toHaveTextContent('40h ?')
-    // ...and neither does a confirmed save of someone else.
+    expect(capButton('Dee Okafor')).toHaveAttribute('title', expect.stringMatching(/may hold a different value/))
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    // A confirmed save of someone else doesn't settle Dee.
     await edit('Ana Ferreira', '36')
     await waitFor(() => expect(capButton('Ana Ferreira')).toHaveTextContent(/^36h$/))
     expect(capButton('Dee Okafor')).toHaveTextContent('40h ?')
 
     // Going back to 40 must reach the server instead of looking "unchanged".
     await edit('Dee Okafor', '40')
-    await waitFor(() => expect(server.hours[4]).toBe(40))
+    await waitFor(() => expect(server.patches()).toHaveLength(SAVE_ATTEMPTS + 2))
     await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^40h$/))
-  })
-
-  it('shows the warning and the doubt together in the editor', async () => {
-    const server = fakeServer(['store-and-lose-answer'])
-    server.failLookups(true)
-    renderGrid()
-    await edit('Dee Okafor', '50')
-    await screen.findByRole('alert')
-    fireEvent.change(screen.getByLabelText('Weekly hours for Dee Okafor'), { target: { value: '45' } })
-    expect(screen.getByText('Changes capacity for every week, past and future.')).toBeInTheDocument()
-    expect(screen.getByText(/Checking with the server/)).toBeInTheDocument()
-    expect(screen.getByText(/weekly hours \(now/)).toHaveTextContent('?')
-  })
-})
-
-describe("someone else's save in progress", () => {
-  it('shows "?" until the server has settled it, and refreshes by itself', async () => {
-    const server = fakeServer([], { saving: [1] })
-    renderGrid()
-    await screen.findByText('Ana Ferreira', { selector: 'th' })
-    expect(capButton('Ana Ferreira')).toHaveTextContent('40h ?')
-    expect(capButton('Ana Ferreira')).toHaveAttribute('title', expect.stringMatching(/in progress on the server/))
-    expect(capButton('Ana Ferreira')).toBeDisabled()
-
-    server.stopSaving()
-    server.hours[1] = 36
-    await waitFor(() => expect(capButton('Ana Ferreira')).toHaveTextContent(/^36h$/), { timeout: 4000 })
-    expect(capButton('Ana Ferreira')).toBeEnabled()
   })
 })
 

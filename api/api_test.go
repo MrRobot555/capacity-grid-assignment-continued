@@ -322,6 +322,7 @@ func TestSaveErrorResponse(t *testing.T) {
 		stored string
 	}{
 		{"COMMIT with no answer", commitOutcome(errors.New("conn closed")), 500, "unknown"},
+		{"the save's deadline during COMMIT", commitOutcome(context.DeadlineExceeded), 500, "unknown"},
 		{"COMMIT refused by Postgres", commitOutcome(&pgconn.PgError{Code: "40001"}), 500, ""},
 		{"statement timeout", &pgconn.PgError{Code: "57014"}, 503, ""},
 		{"no connection in time", fmt.Errorf("begin: %w", context.DeadlineExceeded), 503, ""},
@@ -335,48 +336,52 @@ func TestSaveErrorResponse(t *testing.T) {
 	}
 }
 
-// End to end through a TCP proxy that forwards COMMIT to Postgres and then
-// loses its answer. The value IS stored, so the API must not answer anything
-// the client would read as "not saved". It asks Postgres (pg_xact_status) and
-// answers 200; only when it can't even ask does it answer "stored: unknown".
-func TestUpdatePersonResolvesALostCommitAnswer(t *testing.T) {
+// End to end through a TCP proxy that loses the outcome of COMMIT in three
+// ways. The API can't know whether the save is stored, so it must say
+// "stored: unknown", never anything the client reads as "not saved". Then the
+// client's repeat of the same save (same Save-Id) settles it: a definite 200,
+// with the value stored.
+func TestLostCommitIsUnknownAndARepeatSettlesIt(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		mode proxyMode
 	}{
-		{"answer lost, Postgres reachable", proxyCut},
-		{"answer lost, and Postgres unreachable afterwards", proxyCutAndRefuse},
-		{"answer held until the save's deadline", proxyStall},
+		{"COMMIT reaches Postgres, its answer is lost", proxyCut},
+		{"COMMIT never reaches Postgres", proxyDrop},
+		{"the answer is held until the save's deadline", proxyStall},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := testServer(t)
 			saved := updateTimeout
 			updateTimeout = 300 * time.Millisecond // so the stall case ends at the 2.3 s deadline
 			t.Cleanup(func() { updateTimeout = saved })
-			proxied := proxiedPool(t, tc.mode)
 			t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
 
+			proxied := newServer(proxiedPool(t, tc.mode))
 			start := time.Now()
-			rec := doWithin(t, newServer(proxied), "PATCH", "/api/people/3", `{"weeklyHours": 33}`, 6*time.Second)
-			if took := time.Since(start); took > saveDeadline()+2*time.Second {
+			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+			defer cancel()
+			req := httptest.NewRequest("PATCH", "/api/people/3", strings.NewReader(`{"weeklyHours": 33}`)).WithContext(ctx)
+			req.Header.Set("Save-Id", "save-lost-commit")
+			rec := httptest.NewRecorder()
+			proxied.routes().ServeHTTP(rec, req)
+			if took := time.Since(start); took > saveDeadline()+time.Second {
 				t.Errorf("answered after %v; the whole save has a %v deadline", took, saveDeadline())
-			}
-
-			var stored float64
-			if err := s.db.QueryRow(context.Background(), `SELECT weekly_hours::float8 FROM people WHERE id = 3`).Scan(&stored); err != nil {
-				t.Fatal(err)
-			}
-			if stored != 33 {
-				t.Fatalf("the proxy didn't let COMMIT through (stored %v); the test is not testing a lost answer", stored)
 			}
 			var body map[string]any
 			_ = json.NewDecoder(rec.Body).Decode(&body)
-			if tc.mode == proxyCutAndRefuse {
-				if body["stored"] != "unknown" {
-					t.Errorf("Postgres couldn't be asked, so the answer must be stored: unknown; got %d %v", rec.Code, body)
-				}
-			} else if rec.Code != http.StatusOK || body["weeklyHours"] != 33.0 {
-				t.Errorf("the save was stored and Postgres could be asked, so the answer must be 200 with 33; got %d %v", rec.Code, body)
+			if body["stored"] != "unknown" {
+				t.Fatalf("the outcome of COMMIT was lost, so the answer must be stored: unknown; got %d %v", rec.Code, body)
+			}
+
+			// The repeat goes to the same API process (its registry) over a working connection.
+			proxied.db = s.db
+			repeat := patchWithID(t, proxied, "3", "save-lost-commit", `{"weeklyHours": 33}`)
+			if repeat.Code != http.StatusOK {
+				t.Errorf("repeat: status %d %s, want a definite 200", repeat.Code, repeat.Body)
+			}
+			if h := storedHours(t, s, 3); h != 33 {
+				t.Errorf("after the repeat, stored %v, want 33", h)
 			}
 		})
 	}
@@ -411,9 +416,9 @@ func doWithin(t *testing.T, s *server, method, url, body string, limit time.Dura
 type proxyMode int
 
 const (
-	proxyCut          proxyMode = iota // close the client side after forwarding COMMIT
-	proxyCutAndRefuse                  // ...and refuse every connection after that
-	proxyStall                         // forward COMMIT, never pass its answer back
+	proxyCut   proxyMode = iota // forward COMMIT, then close the client side
+	proxyDrop                   // swallow COMMIT (Postgres never sees it), close both sides
+	proxyStall                  // forward COMMIT, never pass its answer back
 )
 
 func proxiedPool(t *testing.T, mode proxyMode) *pgxpool.Pool {
@@ -443,19 +448,13 @@ func proxiedPool(t *testing.T, mode proxyMode) *pgxpool.Pool {
 	return pool
 }
 
-// cutAfterCommit proxies Postgres connections. Once a client sends COMMIT, it
-// forwards it and then, depending on mode, cuts the client off or holds the
-// answer back.
+// cutAfterCommit proxies Postgres connections and, once a client sends
+// COMMIT, loses its outcome as mode says.
 func cutAfterCommit(ln net.Listener, target string, mode proxyMode) {
-	var refuse atomic.Bool
 	for {
 		client, err := ln.Accept()
 		if err != nil {
 			return
-		}
-		if refuse.Load() {
-			client.Close()
-			continue
 		}
 		go func() {
 			server, err := net.Dial("tcp", target)
@@ -487,20 +486,22 @@ func cutAfterCommit(ln net.Listener, target string, mode proxyMode) {
 			for {
 				n, err := client.Read(buf)
 				if n > 0 {
-					committing := bytes.Contains(bytes.ToLower(buf[:n]), []byte("commit"))
-					if committing {
+					if bytes.Contains(bytes.ToLower(buf[:n]), []byte("commit")) {
 						cut.Store(true)
+						switch mode {
+						case proxyDrop:
+							client.Close()
+							server.Close()
+							return
+						case proxyCut:
+							server.Write(buf[:n])
+							time.Sleep(300 * time.Millisecond) // let Postgres commit
+							client.Close()
+							server.Close()
+							return
+						}
 					}
 					server.Write(buf[:n])
-					if committing && mode != proxyStall {
-						time.Sleep(300 * time.Millisecond) // let Postgres commit
-						if mode == proxyCutAndRefuse {
-							refuse.Store(true)
-						}
-						client.Close()
-						server.Close()
-						return
-					}
 				}
 				if err != nil {
 					server.Close()

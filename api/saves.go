@@ -1,26 +1,28 @@
 package main
 
-// Save outcomes the API remembers, so a client that lost an answer can ask
-// for it instead of guessing.
+// Saves the API remembers by id, so a client that lost an answer can send the
+// same request again and get a definite one.
 //
-// The client gives every save an ID (the Save-Id header). The API records it
-// when the save starts and its outcome when it ends. A client that got no
-// answer asks GET /api/saves/{id}:
+// A save sets an absolute value, so running it twice is harmless. The client
+// gives each save an id (the Save-Id header) and, when it gets no definite
+// answer, sends the identical request again with the same id until it does.
+// The API remembers each id while its save runs and for a while after:
 //
-//   - stored / not-stored: the definite outcome.
-//   - in-progress: still running (the lookup waits a little first).
-//   - never seen: the request hasn't reached this API, and now never will be
-//     acted on: the ID is fenced, so if the request turns up later it is
-//     refused. "Not stored" is then true for good.
-//   - unknown: only when this API has restarted since the save was sent. The
-//     record was in the old process's memory.
+//   - stored:      a repeat is answered with the stored row; nothing runs again.
+//   - in progress: a repeat is told to try again shortly (409, stored: unknown).
+//   - unknown:     the save's COMMIT got no answer. A repeat runs the save
+//     again; if that run fails for certain, the answer is still "unknown",
+//     because the first attempt may have committed.
+//   - refused:     the save failed for certain. A late duplicate (say, one a
+//     proxy held on to) is refused too, so the "not saved" already given
+//     stays true.
 //
-// It lives in memory, not in the database: the schema is fixed. That is also
-// why a restart loses it, and why the client is told "unknown" rather than a guess.
+// An id it doesn't know just runs, which is also what happens after a restart:
+// the registry lives in memory, because the schema is fixed. That is safe for
+// a repeat. The one thing a restart loses is the "refused" guard against a
+// late duplicate, which is a documented limitation.
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"net/http"
 	"regexp"
 	"sync"
@@ -32,119 +34,87 @@ type saveState string
 const (
 	saveInProgress saveState = "in-progress"
 	saveStored     saveState = "stored"
-	saveNotStored  saveState = "not-stored"
 	saveUnknown    saveState = "unknown"
+	saveRefused    saveState = "refused"
 )
 
 type saveRecord struct {
-	PersonID int       `json:"-"`
-	State    saveState `json:"state"`
-	Person   *person   `json:"person,omitempty"`
+	personID int
+	hours    float64
+	state    saveState
+	person   person
 	updated  time.Time
 }
 
 type saveRegistry struct {
 	mu      sync.Mutex
 	records map[string]*saveRecord
-	// keep is how long an outcome is remembered. Clients ask within seconds;
-	// a day is far beyond that, and bounds memory.
+	// keep is how long a finished save is remembered. A client repeats within
+	// a minute or so; an hour bounds memory with a wide margin.
 	keep time.Duration
 }
 
 func newSaveRegistry() *saveRegistry {
-	return &saveRegistry{records: map[string]*saveRecord{}, keep: 24 * time.Hour}
+	return &saveRegistry{records: map[string]*saveRecord{}, keep: time.Hour}
 }
 
 var saveIDPattern = regexp.MustCompile(`^[A-Za-z0-9-]{8,64}$`)
 
-// begin records a new save. If the ID is already known (a duplicate request,
-// or one fenced by a lookup), it returns that record and false instead.
-func (r *saveRegistry) begin(id string, personID int) (saveRecord, bool) {
+// begin starts a save. A new id is recorded as in progress and begin returns
+// known=false. For a known id it returns the record as it was. If that record
+// was "unknown", it is marked in progress again, because the caller will run
+// the save again.
+func (r *saveRegistry) begin(id string, personID int, hours float64) (prev saveRecord, known bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.prune()
-	if rec, ok := r.records[id]; ok {
-		return *rec, false
+	rec, ok := r.records[id]
+	if !ok {
+		r.records[id] = &saveRecord{personID: personID, hours: hours, state: saveInProgress, updated: time.Now()}
+		return saveRecord{}, false
 	}
-	r.records[id] = &saveRecord{PersonID: personID, State: saveInProgress, updated: time.Now()}
-	return saveRecord{}, true
+	prev = *rec
+	if rec.state == saveUnknown && rec.personID == personID && rec.hours == hours {
+		rec.state, rec.updated = saveInProgress, time.Now()
+	}
+	return prev, true
 }
 
-func (r *saveRegistry) finish(id string, state saveState, p *person) {
+func (r *saveRegistry) finish(id string, state saveState, p person) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if rec, ok := r.records[id]; ok {
-		rec.State, rec.Person, rec.updated = state, p, time.Now()
+		rec.state, rec.person, rec.updated = state, p, time.Now()
 	}
-}
-
-// lookup returns a save's outcome. sameProcess says whether the client sent
-// the save to this process (it echoes the Server-Instance it saw). An ID this
-// process never saw is fenced as not stored. That is only safe when the
-// client's save was meant for this process; otherwise the answer is unknown.
-func (r *saveRegistry) lookup(id string, sameProcess bool) saveRecord {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if rec, ok := r.records[id]; ok {
-		return *rec
-	}
-	if !sameProcess {
-		return saveRecord{State: saveUnknown}
-	}
-	r.records[id] = &saveRecord{State: saveNotStored, updated: time.Now()}
-	return saveRecord{State: saveNotStored}
-}
-
-// saving returns the people with a save in progress on this process, so every
-// client (other tabs, other managers) can show their capacity as unsettled.
-func (r *saveRegistry) saving() map[int]bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	people := map[int]bool{}
-	for _, rec := range r.records {
-		if rec.State == saveInProgress {
-			people[rec.PersonID] = true
-		}
-	}
-	return people
 }
 
 func (r *saveRegistry) prune() {
 	for id, rec := range r.records {
-		if rec.State != saveInProgress && time.Since(rec.updated) > r.keep {
+		if rec.state != saveInProgress && time.Since(rec.updated) > r.keep {
 			delete(r.records, id)
 		}
 	}
 }
 
-// lookupWait is how long a lookup of a save still in progress waits for it to
-// finish before answering "in-progress". The client asks again after that.
-var lookupWait = 5 * time.Second
-
-// handleSaveOutcome serves GET /api/saves/{id}?instance=...
-func (s *server) handleSaveOutcome(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if !saveIDPattern.MatchString(id) {
-		writeError(w, http.StatusBadRequest, "not a save id")
-		return
+// replay answers a repeat of a save the registry already knows. It returns
+// false when the save must run (again).
+func replay(w http.ResponseWriter, prev saveRecord, personID int, hours float64) bool {
+	if prev.personID != personID || prev.hours != hours {
+		writeError(w, http.StatusUnprocessableEntity, "this Save-Id was already used for a different change")
+		return true
 	}
-	sameProcess := r.URL.Query().Get("instance") == s.instance
-	rec := s.saves.lookup(id, sameProcess)
-	for deadline := time.Now().Add(lookupWait); rec.State == saveInProgress && time.Now().Before(deadline); {
-		select {
-		case <-r.Context().Done():
-			return
-		case <-time.After(100 * time.Millisecond):
-		}
-		rec = s.saves.lookup(id, sameProcess)
+	switch prev.state {
+	case saveStored:
+		writeJSON(w, http.StatusOK, prev.person)
+	case saveInProgress:
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error":  "this save is still in progress; send it again shortly",
+			"stored": "unknown",
+		})
+	case saveRefused:
+		writeError(w, http.StatusConflict, "this save was already refused and was not stored")
+	default: // saveUnknown: run it again
+		return false
 	}
-	writeJSON(w, http.StatusOK, rec)
-}
-
-// newInstanceID names this process, so a client can tell whether the API it
-// asks is the one it saved through.
-func newInstanceID() string {
-	b := make([]byte, 8)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+	return true
 }

@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, expect, it, vi } from 'vitest'
 import type { CapacityResponse } from './api'
 import { CapacityGrid } from './CapacityGrid'
+import { retryTiming } from './useCapacity'
 
 const capacity: CapacityResponse = {
   weeks: ['2026-01-05', '2026-01-12'],
@@ -15,7 +16,9 @@ const capacity: CapacityResponse = {
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
+const realDelay = retryTiming.delay
 afterEach(() => {
+  retryTiming.delay = realDelay
   cleanup()
   vi.unstubAllGlobals()
 })
@@ -131,8 +134,10 @@ it('finds people by name, ignoring case and accents', async () => {
 })
 
 // A save whose response never arrives may still have been stored: saying "Not
-// saved" would be a guess. Saying so plainly, and offering a safe retry, isn't.
+// saved" would be a guess. It is sent again; if no attempt gets a definite
+// answer, the editor says so plainly, and a retry is safe.
 it('does not claim a save failed when the answer was lost', async () => {
+  retryTiming.delay = () => 5
   vi.stubGlobal(
     'fetch',
     vi.fn(async (_url: string, init?: RequestInit) => {

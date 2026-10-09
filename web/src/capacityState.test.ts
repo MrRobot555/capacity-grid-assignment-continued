@@ -45,16 +45,10 @@ describe('allocationStatus', () => {
     expect(allocationStatus(1, 0.995)).toBe('over')
   })
 
-  it('says how sure it is about a capacity, and never claims a reload is under way', () => {
+  it('says how sure it is about a capacity', () => {
     expect(capacityView(40, 'certain')).toEqual({ text: '40h', certain: true, note: null })
-    for (const certainty of ['checking', 'unknown', 'saving'] as const) {
-      const view = capacityView(40, certainty)
-      expect(view.certain).toBe(false)
-      expect(view.note).toBeTruthy()
-      expect(view.note).not.toMatch(/reload/i)
-    }
-    expect(capacityView(40, 'unknown').note).toMatch(/may hold a different value/)
-    expect(capacityView(40, 'saving').note).toMatch(/in progress on the server/)
+    expect(capacityView(40, 'retrying')).toMatchObject({ certain: false, note: expect.stringMatching(/Sending it again/) })
+    expect(capacityView(40, 'unknown')).toMatchObject({ certain: false, note: expect.stringMatching(/may hold a different value/) })
   })
 
   it('treats any allocation against zero capacity as over, without dividing', () => {
@@ -151,87 +145,56 @@ describe('capacityReducer', () => {
     expect(state.people[4].weeklyHours).toBe(50)
   })
 
-  it('keeps a person unsure through any load: a load can read the value just before a save commits', () => {
-    const state = run(
-      { type: 'fetchStarted', key: 'A', issuedAt: 1 },
-      { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) },
-      { type: 'saveUnconfirmed', id: 4, saveId: 's1' },
-      { type: 'fetchStarted', key: 'A', issuedAt: 3 },
-      { type: 'fetchSucceeded', key: 'A', issuedAt: 3, response: response(40) },
-    )
-    expect(certaintyOf(state, 4)).toBe('checking')
-    // ...while the load still updates the value shown.
-    expect(state.people[4].weeklyHours).toBe(40)
+  it('keeps a person unsure through any load while a save is being retried or was given up', () => {
+    // A load can read the old value just before a lost save commits.
+    for (const doubt of [{ type: 'saveRetrying', id: 4 }, { type: 'saveGaveUp', id: 4 }] as Action[]) {
+      const state = run(
+        doubt,
+        { type: 'fetchStarted', key: 'A', issuedAt: 5 },
+        { type: 'fetchSucceeded', key: 'A', issuedAt: 5, response: response(40) },
+      )
+      expect(certaintyOf(state, 4)).not.toBe('certain')
+      expect(state.people[4].weeklyHours).toBe(40) // the load still updates the value shown
+    }
   })
 
-  it("settles a person's doubt only by the server's answer about that save", () => {
-    const unsure = run({ type: 'saveUnconfirmed', id: 4, saveId: 's1' })
-    const stored = capacityReducer(unsure, {
-      type: 'saveResolved',
-      id: 4,
-      saveId: 's1',
-      outcome: { state: 'stored', person: { id: 4, name: 'Dee Okafor', weeklyHours: 50 } },
-      at: 2,
-    })
-    expect(certaintyOf(stored, 4)).toBe('certain')
-    expect(stored.people[4].weeklyHours).toBe(50)
-    expect(stored.outcomes.s1).toBe('stored')
-
-    const notStored = capacityReducer(unsure, { type: 'saveResolved', id: 4, saveId: 's1', outcome: { state: 'not-stored' }, at: 2 })
-    expect(certaintyOf(notStored, 4)).toBe('certain')
-
-    const unknown = capacityReducer(unsure, { type: 'saveResolved', id: 4, saveId: 's1', outcome: { state: 'unknown' }, at: 2 })
-    expect(certaintyOf(unknown, 4)).toBe('unknown')
-
-    // An answer about some other save of the person changes nothing about the doubt.
-    const other = capacityReducer(unsure, { type: 'saveResolved', id: 4, saveId: 's0', outcome: { state: 'not-stored' }, at: 2 })
-    expect(certaintyOf(other, 4)).toBe('checking')
+  it('clears a settled save with a load issued after it settled, not before', () => {
+    const settled = run(
+      { type: 'saveRetrying', id: 4 },
+      { type: 'fetchStarted', key: 'A', issuedAt: 1 },
+      { type: 'saveSettled', id: 4, at: 2 },
+    )
+    const early = capacityReducer(settled, { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) })
+    expect(certaintyOf(early, 4)).toBe('retrying')
+    const later = [
+      { type: 'fetchStarted', key: 'A', issuedAt: 3 },
+      { type: 'fetchSucceeded', key: 'A', issuedAt: 3, response: response(50) },
+    ] as Action[]
+    const after = later.reduce(capacityReducer, settled)
+    expect(certaintyOf(after, 4)).toBe('certain')
+    expect(after.people[4].weeklyHours).toBe(50)
   })
 
   it("keeps each person's doubt to themselves", () => {
     const state = run(
-      { type: 'saveUnconfirmed', id: 4, saveId: 's1' },
-      { type: 'saveUnconfirmed', id: 1, saveId: 's2' },
+      { type: 'saveRetrying', id: 4 },
+      { type: 'saveGaveUp', id: 1 },
       // A confirmed save of Ana says nothing about Dee.
       { type: 'saveConfirmed', person: { id: 1, name: 'Ana Ferreira', weeklyHours: 36 }, confirmedAt: 3 },
     )
-    expect(certaintyOf(state, 4)).toBe('checking')
+    expect(certaintyOf(state, 4)).toBe('retrying')
     expect(certaintyOf(state, 1)).toBe('certain')
   })
 
-  it('takes "saving" from the server for anyone, and lets it go when the server does', () => {
-    const saving = run(
-      { type: 'fetchStarted', key: 'A', issuedAt: 1 },
-      {
-        type: 'fetchSucceeded',
-        key: 'A',
-        issuedAt: 1,
-        response: { weeks: ['2026-01-05'], people: [{ id: 1, name: 'Ana Ferreira', weeklyHours: 40, allocated: [0], saving: true }] },
-      },
-    )
-    expect(certaintyOf(saving, 1)).toBe('saving')
-    const settled = [
-      { type: 'fetchStarted', key: 'A', issuedAt: 2, quiet: true },
-      {
-        type: 'fetchSucceeded',
-        key: 'A',
-        issuedAt: 2,
-        response: { weeks: ['2026-01-05'], people: [{ id: 1, name: 'Ana Ferreira', weeklyHours: 36, allocated: [0] }] },
-      },
-    ] as Action[]
-    const after = settled.reduce(capacityReducer, saving)
-    expect(certaintyOf(after, 1)).toBe('certain')
-    expect(after.people[1].weeklyHours).toBe(36)
-  })
-
-  it('refreshes quietly: a background load neither dims the grid nor hides an error', () => {
-    const failed = run(
-      { type: 'fetchStarted', key: 'A', issuedAt: 1 },
-      { type: 'fetchFailed', key: 'A', issuedAt: 1, error: 'boom' },
-      { type: 'fetchStarted', key: 'A', issuedAt: 2, quiet: true },
-    )
-    expect(failed.loading).toBe(false)
-    expect(failed.error).toBe('boom')
+  it('clears "unknown" only with a confirmed save of that person', () => {
+    const gaveUp = run({ type: 'saveGaveUp', id: 4 })
+    expect(certaintyOf(gaveUp, 4)).toBe('unknown')
+    const saved = capacityReducer(gaveUp, {
+      type: 'saveConfirmed',
+      person: { id: 4, name: 'Dee Okafor', weeklyHours: 40 },
+      confirmedAt: 2,
+    })
+    expect(certaintyOf(saved, 4)).toBe('certain')
   })
 
   it('takes the server value from a load sent after the save', () => {

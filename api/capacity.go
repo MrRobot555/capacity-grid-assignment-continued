@@ -30,9 +30,6 @@ type personCapacity struct {
 	// single current value with no history, so it is not repeated per week.
 	WeeklyHours float64   `json:"weeklyHours"`
 	Allocated   []float64 `json:"allocated"`
-	// Saving is true while a save for this person is in progress on the API:
-	// weeklyHours may be about to change, whoever is looking.
-	Saving bool `json:"saving,omitempty"`
 }
 
 // capacityQuery returns one row per person with allocated hours for each week
@@ -119,10 +116,6 @@ func (s *server) handleCapacity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	saving := s.saves.saving()
-	for i := range people {
-		people[i].Saving = saving[people[i].ID]
-	}
 	resp := capacityResponse{Weeks: make([]string, len(weeks)), People: people}
 	for i, wk := range weeks {
 		resp.Weeks[i] = wk.Format(dateLayout)

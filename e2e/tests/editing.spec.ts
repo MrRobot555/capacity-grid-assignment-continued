@@ -82,33 +82,16 @@ test('save failure (500) leaves the grid untouched; Retry applies the confirmed 
   expect(gets.length).toBe(getsAfterLoad)
 })
 
-// The request is cut before it reaches the API. The grid asks the real API
-// what became of that save: it never saw it, fences it, and says so.
-test('a save cut off before reaching the server ends as a definite "Not saved"', async ({ page }) => {
+// The first attempt is cut off before it reaches the API. The same save is
+// sent again, reaches the real API, and is stored: no "Not saved", ever.
+test('a save cut off before reaching the server is sent again and stored', async ({ page, request }) => {
   await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
-  await routeApi(page, async (route, req) => {
-    if (!isPatch(req)) return false
-    await route.abort('connectionreset')
-    return true
-  })
-
-  await openEditor(page, DEE.name)
-  await editorInput(page, DEE.name).fill('50')
-  await editorInput(page, DEE.name).press('Enter')
-
-  await expect(editorHint(page)).toHaveText('Not saved. The server confirmed this save did not go through.')
-  await expect(capButton(page, DEE.name)).toHaveText('40h')
-  await expectCell(page, DEE.name, 1, '45 +5', 'over')
-})
-
-// The request reaches the real API and is stored; only its answer is lost.
-// The grid asks the real API, learns it was stored, and closes the editor.
-test('a save whose answer is lost is found to be stored, and the grid says so', async ({ page, request }) => {
-  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  const saveIds: (string | null)[] = []
   await routeApi(page, async (route, req) => {
     if (!isPatch(req, 3)) return false
-    await route.fetch() // the API stores it...
-    await route.abort('connectionreset') // ...and the browser never hears back
+    saveIds.push(req.headers()['save-id'] ?? null)
+    if (saveIds.length > 1) return false // the repeat goes to the real API
+    await route.abort('connectionreset')
     return true
   })
   try {
@@ -118,6 +101,40 @@ test('a save whose answer is lost is found to be stored, and the grid says so', 
 
     await expect(editor(page)).toHaveCount(0)
     await expect(capButton(page, 'Cem Aydin')).toHaveText('24h')
+    expect(saveIds).toHaveLength(2)
+    expect(saveIds[1]).toBe(saveIds[0])
+  } finally {
+    const res = await request.patch('/api/people/3', { data: { weeklyHours: 20 } })
+    expect(res.status(), 'restoring Cem Aydin to 20h').toBe(200)
+  }
+})
+
+// The request reaches the real API and is stored; only its answer is lost.
+// The repeat (same Save-Id) is answered from the API's record, so it isn't
+// stored twice, and the grid reloads to show what the API holds.
+test('a save whose answer is lost is found to be stored, and the grid says so', async ({ page, request }) => {
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  const answers: number[] = []
+  await routeApi(page, async (route, req) => {
+    if (!isPatch(req, 3)) return false
+    const response = await route.fetch() // the real API handles it...
+    answers.push(response.status())
+    if (answers.length > 1) {
+      await route.fulfill({ response }) // the repeat's answer gets through
+      return true
+    }
+    await route.abort('connectionreset') // ...but the first answer never reaches the browser
+    return true
+  })
+  try {
+    await openEditor(page, 'Cem Aydin')
+    await editorInput(page, 'Cem Aydin').fill('24')
+    await editorInput(page, 'Cem Aydin').press('Enter')
+
+    await expect(editor(page)).toHaveCount(0)
+    await expect(capButton(page, 'Cem Aydin')).toHaveText('24h')
+    // Both attempts were answered 200: the repeat from the API's record.
+    expect(answers).toEqual([200, 200])
   } finally {
     const res = await request.patch('/api/people/3', { data: { weeklyHours: 20 } })
     expect(res.status(), 'restoring Cem Aydin to 20h').toBe(200)

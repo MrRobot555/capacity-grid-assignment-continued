@@ -1,5 +1,4 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type UIEvent } from 'react'
-import { isDefiniteFailure } from './api'
 import {
   allocationStatus,
   capacityView,
@@ -26,7 +25,7 @@ import {
   type ISODate,
   type WeekRange,
 } from './dates'
-import { useCapacity } from './useCapacity'
+import { SAVE_ATTEMPTS, useCapacity } from './useCapacity'
 
 type Props = {
   /** Monday of the first week. */
@@ -55,8 +54,6 @@ type Editing = {
   error: string | null
   /** The last attempt failed, so the action is a retry. */
   failed: boolean
-  /** The last attempt got no answer; the server is being asked about this save. */
-  checking: string | null
 }
 
 // CapacityGrid renders one row per person and one column per week, showing
@@ -117,7 +114,7 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
   })
 
   function openEditor(id: number, weeklyHours: number) {
-    setEditing({ id, draft: String(weeklyHours), saving: false, error: null, failed: false, checking: null })
+    setEditing({ id, draft: String(weeklyHours), saving: false, error: null, failed: false })
   }
 
   function closeEditor() {
@@ -126,33 +123,9 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
     setEditing(null)
   }
 
-  // The server answered about a save whose own answer was lost.
-  useEffect(() => {
-    const saveId = editing?.checking
-    const outcome = saveId ? state.outcomes[saveId] : undefined
-    if (!editing || !outcome) return
-    if (outcome === 'stored') {
-      if (focusIsInEditorOrNowhere()) returnFocusTo.current = editing.id
-      setEditing(null)
-      return
-    }
-    setEditing({
-      ...editing,
-      checking: null,
-      error:
-        outcome === 'not-stored'
-          ? 'Not saved. The server confirmed this save did not go through.'
-          : "Couldn't confirm the save: the server can't tell whether it went through. Saving again is safe.",
-    })
-  }, [editing, state.outcomes])
-
   async function submit() {
     if (!editing || editing.saving) return
     const { id } = editing
-    // Not while the server is still settling a save of this person: a second
-    // save could race it.
-    const settling = certainty(id) === 'checking' || certainty(id) === 'saving'
-    if (settling) return
     const hours = parseWeeklyHours(editing.draft)
     if (typeof hours === 'string') {
       setEditing({ ...editing, error: hours, failed: false })
@@ -165,17 +138,24 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
       return
     }
     setEditing({ ...editing, saving: true, error: null })
-    const result = await saveWeeklyHours(id, hours)
-    if (result.ok) {
-      // A save can take seconds; if the manager has moved on, leave focus alone.
-      if (focusIsInEditorOrNowhere()) returnFocusTo.current = id
-      setEditing((cur) => (cur?.id === id ? null : cur))
-      return
+    let message: string
+    try {
+      const result = await saveWeeklyHours(id, hours)
+      if (result.ok) {
+        // A save can take seconds; if the manager has moved on, leave focus alone.
+        if (focusIsInEditorOrNowhere()) returnFocusTo.current = id
+        setEditing((cur) => (cur?.id === id ? null : cur))
+        return
+      }
+      message = result.unconfirmed
+        ? `Couldn't confirm the save after ${SAVE_ATTEMPTS} tries, so the server may or may not hold it. Saving again is safe. (${errorText(result.error)})`
+        : `Not saved. ${errorText(result.error)}`
+    } catch (err) {
+      // Anything unexpected must still end the save, or the editor would stay
+      // at "Saving…" with every button locked.
+      message = `Something went wrong before the save was sent: ${errorText(err)}`
     }
-    const message = describeSaveError(result.error)
-    setEditing((cur) =>
-      cur?.id === id ? { ...cur, saving: false, error: message, failed: true, checking: result.checking } : cur,
-    )
+    setEditing((cur) => (cur?.id === id ? { ...cur, saving: false, error: message, failed: true } : cur))
   }
 
   return (
@@ -255,7 +235,6 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
         <CapacityEditor
           name={editingPerson.name}
           capacity={capacityView(editingPerson.weeklyHours, certainty(editing.id))}
-          settling={certainty(editing.id) === 'checking' || certainty(editing.id) === 'saving'}
           editing={editing}
           onChange={(draft) => setEditing({ ...editing, draft, error: null, failed: false })}
           onSubmit={submit}
@@ -336,15 +315,9 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
                         title={capacity.note ?? undefined}
                         data-person-id={row.id}
                         aria-expanded={isEditing}
-                        // While a save is in flight its editor must stay open, or a
-                        // failure would have nowhere to be shown; while the server
-                        // is settling a save of this person, another could race it.
-                        disabled={
-                          isEditing ||
-                          editing?.saving === true ||
-                          rowCertainty === 'checking' ||
-                          rowCertainty === 'saving'
-                        }
+                        // While a save is in flight (including its repeats) its editor
+                        // must stay open, or its outcome would have nowhere to be shown.
+                        disabled={isEditing || editing?.saving === true}
                         onClick={() => openEditor(row.id, row.weeklyHours)}
                       >
                         {capacity.text}
@@ -401,14 +374,12 @@ function AllocationCell(props: {
 function CapacityEditor(props: {
   name: string
   capacity: CapacityView
-  /** The server is still settling a save of this person: wait before saving again. */
-  settling: boolean
   editing: Editing
   onChange: (draft: string) => void
   onSubmit: () => void
   onCancel: () => void
 }) {
-  const { name, capacity, settling, editing, onChange, onSubmit, onCancel } = props
+  const { name, capacity, editing, onChange, onSubmit, onCancel } = props
   const hintId = `cap-hint-${editing.id}`
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -454,7 +425,7 @@ function CapacityEditor(props: {
       />
       {/* aria-disabled, not disabled: a disabled button drops focus to the page,
           and then Escape no longer reaches the form after a failure. */}
-      <button type="submit" aria-disabled={editing.saving || settling}>
+      <button type="submit" aria-disabled={editing.saving}>
         {editing.saving ? 'Saving…' : editing.failed ? 'Retry' : 'Save'}
       </button>
       <button type="button" onClick={onCancel} disabled={editing.saving}>
@@ -535,12 +506,8 @@ function useSlow(key: number | null) {
   return key !== null && slowKey === key
 }
 
-function describeSaveError(err: unknown): string {
-  const message = err instanceof Error ? err.message : String(err)
-  if (isDefiniteFailure(err)) return `Not saved. ${message}`
-  // The answer was lost: the server may have stored it. The server is asked
-  // what became of it, and this message is replaced by its answer.
-  return `Couldn't confirm the save yet (${message}). Checking with the server whether it went through…`
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }
 
 function focusIsInEditorOrNowhere(): boolean {

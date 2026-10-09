@@ -23,10 +23,13 @@ Every finding has a verdict in [`.notes/review-register.md`](.notes/review-regis
 | — | 1 | a "flaky" test was a real bug: after a timeout, the API said "not saved" while the value could still commit. The limit moved into Postgres (`statement_timeout`) |
 | 2 | 18 | two areas had recurred five times each, so they were **redesigned** instead of patched: the save-outcome state, and the editor (moved out of the virtualised rows) |
 | 3 | 14 | the save-outcome redesign rested on a false premise ("a later load proves the value"), so it was **redesigned again** |
-| 4 | 9 | the remaining gap could only be closed **server-side**: save outcomes the API can answer for (`Save-Id`, fencing, `pg_xact_status`) and in-progress saves visible to every client |
+| 4 | 9 | a **server-side** outcome registry with lookups, fencing, `pg_xact_status` and cross-tab polling |
+| 5 | 23 | the count *rose*: every redesign so far had **added** machinery to the same approach. Recounting per the rule (every occurrence counts, no reset after a redesign), the area had recurred about 12 times, so it was **redesigned by subtraction**. A save is idempotent, so a lost answer is settled by sending the identical request again (same `Save-Id`), and the API recognises the repeat. The lookups, fencing, instance ids, `pg_xact_status` and polling were deleted |
 
 The rule followed: if the same problem comes back a third time, that area is
-redesigned rather than patched again.
+redesigned rather than patched again. Round 5 added a correction: count every
+occurrence, never reset after a redesign. If redesigns keep recurring, the
+next one must remove mechanisms, not add them.
 
 **Where the provided scaffold itself was wrong**, with evidence:
 [`SCAFFOLD-FINDINGS.md`](SCAFFOLD-FINDINGS.md).
