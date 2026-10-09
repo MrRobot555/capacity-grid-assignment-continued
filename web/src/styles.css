@@ -1,0 +1,310 @@
+:root {
+  color-scheme: light dark;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  --bg: Canvas;
+  --line: color-mix(in srgb, currentColor 18%, transparent);
+  --muted: color-mix(in srgb, currentColor 55%, transparent);
+  --over: #d92d20;
+  --full: #12805c;
+  --bar: color-mix(in srgb, #2563eb 22%, transparent);
+}
+
+body {
+  margin: 0;
+  padding: 2rem;
+  background: var(--bg);
+}
+
+h1 {
+  font-size: 1.4rem;
+  margin: 0 0 1rem;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+/* Toolbar */
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.toolbar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.nav {
+  display: inline-flex;
+}
+
+.nav button {
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--line);
+  background: transparent;
+  cursor: pointer;
+}
+
+.nav button + button {
+  border-left: none;
+}
+
+.nav button:first-child {
+  border-radius: 6px 0 0 6px;
+}
+
+.nav button:last-child {
+  border-radius: 0 6px 6px 0;
+}
+
+.status {
+  color: var(--muted);
+  min-width: 12rem;
+}
+
+.summary {
+  margin: 0 0 1rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.over-text {
+  color: var(--over);
+}
+
+.banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  padding: 0.6rem 0.9rem;
+  border: 1px solid var(--over);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--over) 10%, transparent);
+}
+
+/* Grid */
+
+.scroller {
+  width: fit-content;
+  max-width: 100%;
+  overflow: auto;
+  max-height: calc(100vh - 13rem);
+  border: 1px solid var(--line);
+  transition: opacity 120ms;
+}
+
+.scroller.stale {
+  opacity: 0.55;
+}
+
+table {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+th,
+td {
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  white-space: nowrap;
+  background: var(--bg);
+}
+
+thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  font-weight: 600;
+  vertical-align: bottom;
+}
+
+.sub {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.sub.over-text {
+  color: var(--over);
+  font-weight: 600;
+}
+
+th.week {
+  text-align: right;
+  min-width: 4.5rem;
+}
+
+th.week.current {
+  box-shadow: inset 0 -3px 0 #2563eb;
+}
+
+.name {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  width: 14rem;
+  min-width: 14rem;
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+
+.cap {
+  position: sticky;
+  left: calc(14rem + 1.2rem + 1px);
+  z-index: 1;
+  min-width: 5.5rem;
+}
+
+thead .name,
+thead .cap {
+  z-index: 3;
+}
+
+.cap-button {
+  border: 1px dashed var(--line);
+  border-radius: 4px;
+  background: transparent;
+  padding: 0.1rem 0.4rem;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+
+.cap-button:disabled {
+  border-style: solid;
+  border-color: #2563eb;
+  color: inherit;
+  cursor: default;
+}
+
+.cap-button:hover,
+.cap-button:focus-visible {
+  border-style: solid;
+  border-color: #2563eb;
+}
+
+td.cap:has(.cap-editor) {
+  z-index: 4;
+}
+
+/* Opens below the row so the row's own numbers stay visible while editing. */
+.cap-editor {
+  position: absolute;
+  top: calc(100% - 0.2rem);
+  left: 0.3rem;
+  display: grid;
+  grid-template-columns: 5rem auto auto;
+  gap: 0.3rem;
+  width: max-content;
+  padding: 0.4rem;
+  border: 1px solid #2563eb;
+  border-radius: 6px;
+  background: var(--bg);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.2);
+}
+
+.cap-editor .hint {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+  white-space: normal;
+  max-width: 16rem;
+}
+
+.cap-editor .hint.error {
+  color: var(--over);
+  font-weight: 600;
+}
+
+.cap-editor input[aria-invalid='true'] {
+  border-color: var(--over);
+}
+
+/* Allocation cells: a utilisation bar behind the number, red when over. */
+
+/* Uniform row height: the grid is virtualised (see ROW_HEIGHT_GUESS in CapacityGrid.tsx). */
+/* rem, so the height scales with the font instead of being outgrown by it. Every
+   cell is one line of text, so nothing can make one row taller than another. */
+tbody tr:not(.spacer) > * {
+  height: 2.75rem;
+  box-sizing: border-box;
+  padding-block: 0;
+  line-height: 1.15;
+}
+
+tr.spacer td {
+  padding: 0;
+  border: none;
+}
+
+td.alloc {
+  text-align: right;
+  background:
+    linear-gradient(to right, var(--bar) calc(var(--fill) * 100%), transparent 0),
+    var(--bg);
+}
+
+td.alloc.none {
+  color: var(--muted);
+}
+
+td.alloc.full {
+  --bar: color-mix(in srgb, var(--full) 25%, transparent);
+}
+
+td.alloc.over {
+  --bar: color-mix(in srgb, var(--over) 28%, transparent);
+  color: var(--over);
+  font-weight: 700;
+}
+
+.delta {
+  margin-left: 0.3em;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+tr.is-over .name {
+  box-shadow: inset 3px 0 0 var(--over);
+}
+
+.empty {
+  color: var(--muted);
+  padding: 1.5rem;
+}
+
+/* Loading skeleton for the first load, when there is nothing to keep on screen. */
+
+.skeleton {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.skeleton-row {
+  height: 1.8rem;
+  border-radius: 4px;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.4;
+  }
+}
