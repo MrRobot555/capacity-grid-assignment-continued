@@ -82,7 +82,9 @@ test('save failure (500) leaves the grid untouched; Retry applies the confirmed 
   expect(gets.length).toBe(getsAfterLoad)
 })
 
-test('save network abort says the save could not be confirmed (it may have been stored)', async ({ page }) => {
+// The request is cut before it reaches the API. The grid asks the real API
+// what became of that save: it never saw it, fences it, and says so.
+test('a save cut off before reaching the server ends as a definite "Not saved"', async ({ page }) => {
   await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
   await routeApi(page, async (route, req) => {
     if (!isPatch(req)) return false
@@ -94,14 +96,32 @@ test('save network abort says the save could not be confirmed (it may have been 
   await editorInput(page, DEE.name).fill('50')
   await editorInput(page, DEE.name).press('Enter')
 
-  await expect(editorHint(page)).toHaveText(
-    /^Couldn't confirm the save, so it may or may not have been stored\. Retrying is safe\. \(Couldn't reach the server/,
-  )
-  await expect(editorHint(page)).not.toContainText('Not saved')
-  await expect(editor(page).getByRole('button', { name: 'Retry', exact: true })).toBeVisible()
-  // The grid shows the last value it can vouch for, and says it can't vouch for it.
-  await expect(capButton(page, DEE.name)).toHaveText('40h ?')
+  await expect(editorHint(page)).toHaveText('Not saved. The server confirmed this save did not go through.')
+  await expect(capButton(page, DEE.name)).toHaveText('40h')
   await expectCell(page, DEE.name, 1, '45 +5', 'over')
+})
+
+// The request reaches the real API and is stored; only its answer is lost.
+// The grid asks the real API, learns it was stored, and closes the editor.
+test('a save whose answer is lost is found to be stored, and the grid says so', async ({ page, request }) => {
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  await routeApi(page, async (route, req) => {
+    if (!isPatch(req, 3)) return false
+    await route.fetch() // the API stores it...
+    await route.abort('connectionreset') // ...and the browser never hears back
+    return true
+  })
+  try {
+    await openEditor(page, 'Cem Aydin')
+    await editorInput(page, 'Cem Aydin').fill('24')
+    await editorInput(page, 'Cem Aydin').press('Enter')
+
+    await expect(editor(page)).toHaveCount(0)
+    await expect(capButton(page, 'Cem Aydin')).toHaveText('24h')
+  } finally {
+    const res = await request.patch('/api/people/3', { data: { weeklyHours: 20 } })
+    expect(res.status(), 'restoring Cem Aydin to 20h').toBe(200)
+  }
 })
 
 test('validation: empty and out-of-range input show a message and send no PATCH', async ({ page }) => {

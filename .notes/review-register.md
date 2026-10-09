@@ -86,6 +86,15 @@ just the reported line), REJECTED (with a reason), FOLLOWUP (real, but out of sc
 | R3-G8 | 3 | Low | The panel's "(now Xh)" is never asserted (P1) | RESOLVED | P1 |
 | R3-G9 | 3 | Low | Own capacity button disabled while editing is untested (P2) | RESOLVED | P2 |
 | R3-G10 | 3 | Low | The accessible name ", last save not confirmed" is untested (M8) | RESOLVED | M8 |
+| R4-A1 | 4 | High | (new evidence against R3-A1) The doubt lives only in the page's memory: F5 or a second tab shows the value without "?" (the R3-A1 end state). The doubt is also recorded only when the save fails, not when it starts | RESOLVED by owner decision: **server-side fix**. A Save-Id outcome registry with fencing; `pg_xact_status` for lost COMMIT answers; a `saving` flag in capacity for every client and tab; the client asks until it gets a definite answer, and blocks a second save of that person meanwhile | adversarial p2 |
+| R4-A2 | 4 | Low | (round-3 regression) While unconfirmed, the doubt note replaces the "Changes capacity for every week, past and future" warning that DECISIONS.md promises | RESOLVED | p1 |
+| R4-A3 | 4 | Low | `capacityView` claims "every place that shows a capacity" uses it, but the summary and the week headers' over-counts use the doubtful value without saying so | RESOLVED | p1 |
+| R4-A4 | 4 | Low | (relocation, both reviewers) Comments still state the old premise ("reloads to check", "so the reload can't settle it"), in CapacityGrid.tsx and saving.test.tsx | RESOLVED | grep |
+| R4-A5 | 4 | Low | (relocation) `unconfirmedAt` timestamps are dead data, a leftover of the load filter round 3 removed | RESOLVED | code path |
+| R4-G1 | 4 | High | No gate that a confirmed save of one person leaves another's doubt alone, the round-3 premise itself (V1 survives every suite) | RESOLVED | V1 + grid probe |
+| R4-G2 | 4 | High | The whole-save deadline has no gate: not its existence (G1), its order against the client's 15 s (G3), or its reach into COMMIT (G5) | RESOLVED | G1, G3, G5 survive; pool probe |
+| R4-G3 | 4 | Low | Tooltip wiring of `capacityView` (button title, cell title) is unchecked (V2, V3) | RESOLVED | |
+| R4-G4 | 4 | Low | Clicking "Saving…" again is stopped only by `submit`'s guard (aria-disabled lets the click through); removing the guard survives (V4) | RESOLVED | |
 **Round 2 status:** 18 findings. The two areas that recurred 5 times were redesigned, not patched (see Recurrence). Every finding has a gate, and every gate was checked against the code it guards:
 - The new Vitest gates: 8 fail on the pre-redesign code. One gate of mine passed on the old code because it went through the already-fixed path; it was rewritten to take the reported path and now fails there.
 - The new e2e editor gates: all 3 fail on the pre-redesign code.
@@ -100,6 +109,15 @@ Go 13, Vitest 66 and Playwright 32 pass, and the build passes. My own test mista
 
 Gate checks: 9 Vitest mutations from the audit (R6, F1, P2, P4, M3, M8, P1, U2, plus "loads clear the doubt") and 2 browser ones (F2, Save focus) are now caught. G1 (commitOutcome unwired) fails the proxy test with an explicit message. Go 15, Vitest 73 and Playwright 34 pass, and the build passes. **Next: round 4.**
 
+**Round 4 status:** 9 findings. R4-A1 was closed server-side, by the owner's decision: outcomes became answerable by the API instead of guessed by one tab. Also fixed: the editor shows the warning and the doubt together; the summary counts unconfirmed capacities; stale comments and dead timestamps removed; the health check no longer leaks database errors; the server has HTTP timeouts.
+
+Gate checks:
+- 6 Go mutations caught: no fencing, fencing across processes, no `saving` flag, no `pg_xact_status`, no whole-save deadline, no replay.
+- 7 web mutations caught: confirm wipes every doubt, no lookup, not blocked while checking, `saving` ignored, no refresh, loads clear doubt, the editor ignores the answer.
+- One gate (the whole-save deadline) was caught but failed slowly: a 120 s hang in cleanup. It now fails in seconds.
+
+Go 25, Vitest 78 and Playwright 35 pass. **Next: round 5.**
+
 ## Recurrence (standing rule: a 3rd recurrence in one area means redesign, not another patch)
 
 Counted per area across the whole register, including occurrences from before the rule. After a redesign, occurrences are counted again from zero, so the redesign itself is held to the same rule.
@@ -109,6 +127,7 @@ Counted per area across the whole register, including occurrences from before th
 | The UI asserting a save outcome it doesn't know | R1-A1, R2-A1, R2-A2, R2-A4, R2-A6 | 5 | **REDESIGN (round 2):** "outcome unknown" moves from the editor into the reducer, per person. Only a confirmed save, or a load issued after the uncertainty began, clears it. The range reloads the moment an outcome is unknown. One function (`isDefiniteFailure`) decides every message. The API reports a lost COMMIT as `stored: unknown` |
 | The editor living inside a virtualised, filterable row (focus, visibility of its error) | R1-A3, R1-A6, R2-A3, R2-A5, R2-A8 | 5 | **REDESIGN (round 2):** the editor leaves the rows and becomes one panel docked above the grid, so scrolling or filtering can't unmount it, re-focus it or hide its error. The off-screen banner, "Show" and visibility detection are removed. Focus moves only on the user's own actions, and comes back to the row's button only if it was still in the editor |
 | ↳ same area, since the round-2 redesign | R3-A1, R3-A2, R3-A4 | 3 | **REDESIGN AGAIN (round 3).** The premise was wrong ("a later load proves the value"), and certainty was decided separately at each place a capacity is shown. New premise: only a confirmed save of *that person* clears doubt; loads update the value shown but never the doubt. New structure: one presenter (`capacityView`) gives the text, marker and explanation to every place a capacity appears. API: one deadline for the whole save, Begin through Commit |
+| ↳ save-outcome area, since the round-3 redesign | R4-A1, R4-A3 | 2 | below the threshold, but **the owner chose a server-side redesign for R4-A1**: outcomes become answerable by the server instead of guessed by one tab |
 | ↳ editor area, since the round-2 redesign | R3-A3 | 1 | patch |
 | Status vs displayed value rounding | R1-A8, R2-A7 | 2 | patch: one `hundredths()` used by status, overage and text |
 | Typing into date fields | R1-A2 | 1 | patch |

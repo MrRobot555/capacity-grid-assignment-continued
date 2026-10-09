@@ -13,6 +13,14 @@ import (
 
 type server struct {
 	db *pgxpool.Pool
+	// saves remembers save outcomes for clients that lost an answer (saves.go).
+	saves *saveRegistry
+	// instance names this process; sent on every response as Server-Instance.
+	instance string
+}
+
+func newServer(db *pgxpool.Pool) *server {
+	return &server{db: db, saves: newSaveRegistry(), instance: newInstanceID()}
 }
 
 func main() {
@@ -39,10 +47,22 @@ func main() {
 		log.Fatalf("ping: %v", err)
 	}
 
-	s := &server{db: db}
+	s := newServer(db)
 
+	// The scaffold used http.ListenAndServe, which has no timeouts: a client
+	// that sends headers slowly holds a connection open for ever. WriteTimeout
+	// must outlast the longest handler: a save (saveDeadline, 12 s) or a lookup
+	// waiting for one (lookupWait, 5 s).
+	srv := &http.Server{
+		Addr:              ":8080",
+		Handler:           s.routes(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 	log.Println("listening on :8080")
-	log.Fatal(http.ListenAndServe(":8080", s.routes()))
+	log.Fatal(srv.ListenAndServe())
 }
 
 func (s *server) routes() http.Handler {
@@ -50,13 +70,20 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/capacity", s.handleCapacity)
 	mux.HandleFunc("PATCH /api/people/{id}", s.handleUpdatePerson)
-	return mux
+	mux.HandleFunc("GET /api/saves/{id}", s.handleSaveOutcome)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server-Instance", s.instance)
+		mux.ServeHTTP(w, r)
+	})
 }
 
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	var people int
 	if err := s.db.QueryRow(r.Context(), `SELECT count(*) FROM people`).Scan(&people); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		// The scaffold sent err.Error() to the client: the database's own error
+		// text, in plain text. It belongs in the log; the client gets JSON.
+		log.Printf("health: %v", err)
+		writeError(w, http.StatusServiceUnavailable, "database unavailable")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "people": people})

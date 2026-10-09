@@ -121,3 +121,16 @@ left unfinished. Append as you go; a line or two per entry is right.
 - **New structure:** one presenter, `capacityView`, used by every place a capacity appears (button, its accessible name, tooltip, cell titles, the panel's title and hint). No display site can claim more than is known.
 - **API:** one deadline for the whole save, Begin through Commit. The timeout chain is 10 s (Postgres), 12 s (API), 15 s (client), so the server answers first. The error mapping is one tested function, and a TCP-proxy test that cuts the answer after COMMIT pins `stored: unknown` end to end.
 - **Save button:** `aria-disabled` instead of `disabled`. A disabled, focused button drops focus to the page in Chrome.
+
+## Review round 4 → save outcomes made answerable by the server (owner's decision)
+
+- The last gap of the client-only design: doubt lived in one page's memory, so F5 or a second tab showed an unsure value as fact. No client-side storage can cover another tab or another manager, so the owner chose a server-side fix.
+- Each save carries a client-chosen `Save-Id`. The API records each outcome and answers `GET /api/saves/{id}`.
+  - An id it never saw is fenced (a late request with it is refused), so "not stored" stays true.
+  - After a restart it says "unknown" rather than guess. The client echoes the `Server-Instance` it saved through.
+- When the API loses the answer to its own COMMIT, it asks Postgres (`pg_xact_status`), so `stored: unknown` now only happens when Postgres can't be reached at all.
+- `GET /api/capacity` marks people whose save is in progress (`saving`). Every client shows "?" and refreshes quietly until it settles.
+- Client: the person shows "Checking…" and can't be saved again until the server answers. The editor then closes ("stored after all") or says "Not saved" for certain.
+- Caught myself: an unsafe "close the connection first" step. pgxpool had already handed the connection back, so it could have closed another request's connection. Removed; pgxpool destroys a released connection that is still in a transaction anyway.
+- Gate hygiene: the whole-save-deadline gate caught its mutation but hung for 120 s in cleanup. The request now carries a context that ends at the test's limit.
+- Wrote `SCAFFOLD-FINDINGS.md`: where the provided scaffold itself is wrong, each point with a measurement (collation, missing CHECKs, the overlap index, no row version, no server timeouts, the health check leaking DB errors, the seed's undocumented shape) and what it needs.

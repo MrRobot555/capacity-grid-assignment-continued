@@ -89,8 +89,9 @@ export function editorInput(page: Page, name: string): Locator {
   return page.getByLabel(`Weekly hours for ${name}`, { exact: true })
 }
 
+/** The editor's main hint: its message or error (a second line may carry the capacity's certainty note). */
 export function editorHint(page: Page): Locator {
-  return page.locator('.cap-editor .hint')
+  return page.locator('.cap-editor [id^="cap-hint-"]')
 }
 
 export async function openEditor(page: Page, name: string) {

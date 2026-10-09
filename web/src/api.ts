@@ -7,13 +7,22 @@ export type CapacityPerson = {
   weeklyHours: number
   /** Allocated hours, aligned to CapacityResponse.weeks. */
   allocated: number[]
+  /** A save for this person is in progress on the API (from any client). */
+  saving?: boolean
 }
 
 export type CapacityResponse = {
   /** The Monday of each week in the range. */
   weeks: ISODate[]
   people: CapacityPerson[]
+  /** The API process that answered (its Server-Instance header). */
+  instance?: string | null
 }
+
+/** What the API knows about a save, by its id (api/saves.go). */
+export type SaveOutcome =
+  | { state: 'stored'; person: Person }
+  | { state: 'not-stored' | 'in-progress' | 'unknown' }
 
 export type Person = { id: number; name: string; weeklyHours: number }
 
@@ -53,6 +62,10 @@ export function isDefiniteFailure(err: unknown): boolean {
 export const SAVE_TIMEOUT_MS = 15_000
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
+  return (await send<T>(url, init)).body
+}
+
+async function send<T>(url: string, init?: RequestInit): Promise<{ body: T; res: Response }> {
   let res: Response
   try {
     res = await fetch(url, init)
@@ -72,19 +85,40 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     throw new ApiError(`The server couldn't handle the request (${res.status}).`)
   }
   if (body === null) throw new ApiError('The server sent a response we could not read.')
-  return body as T
+  return { body: body as T, res }
 }
 
-export function fetchCapacity(from: ISODate, to: ISODate, signal?: AbortSignal) {
-  return request<CapacityResponse>(`/api/capacity?from=${from}&to=${to}`, { signal })
+export async function fetchCapacity(from: ISODate, to: ISODate, signal?: AbortSignal): Promise<CapacityResponse> {
+  const { body, res } = await send<CapacityResponse>(`/api/capacity?from=${from}&to=${to}`, { signal })
+  return { ...body, instance: res.headers.get('Server-Instance') }
 }
 
-export function updateWeeklyHours(id: number, weeklyHours: number) {
+/**
+ * `saveId` names this save, so its outcome can be asked for later if the
+ * answer is lost (lookupSave). Each attempt gets a new one.
+ */
+export function updateWeeklyHours(id: number, weeklyHours: number, saveId: string) {
   return request<Person>(`/api/people/${id}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'Save-Id': saveId },
     body: JSON.stringify({ weeklyHours }),
     // A save must end, one way or the other, or it would lock editing forever.
     signal: AbortSignal.timeout(SAVE_TIMEOUT_MS),
   })
+}
+
+/**
+ * Asks the API what became of a save whose answer was lost. `instance` is the
+ * API process the save was sent to: if it has restarted since, it can't know,
+ * and says "unknown" rather than guess.
+ */
+export async function lookupSave(saveId: string, instance: string | null): Promise<SaveOutcome> {
+  const outcome = await request<{ state?: unknown; person?: Person }>(
+    `/api/saves/${encodeURIComponent(saveId)}?instance=${encodeURIComponent(instance ?? '')}`,
+  )
+  if (outcome.state === 'stored' && outcome.person) return { state: 'stored', person: outcome.person }
+  if (outcome.state === 'not-stored' || outcome.state === 'in-progress' || outcome.state === 'unknown') {
+    return { state: outcome.state }
+  }
+  throw new ApiError('The server sent an outcome we could not read.')
 }

@@ -39,7 +39,7 @@ func testServer(t *testing.T) *server {
 		t.Fatal(err)
 	}
 	t.Cleanup(db.Close)
-	return &server{db: db}
+	return newServer(db)
 }
 
 func do(t *testing.T, s *server, method, url, body string) *httptest.ResponseRecorder {
@@ -335,11 +335,89 @@ func TestSaveErrorResponse(t *testing.T) {
 	}
 }
 
-// End to end through a TCP proxy that forwards COMMIT to Postgres and then cuts
-// the API off before the answer comes back: the value IS stored, so the API
-// must not answer anything the client would read as "not saved".
-func TestUpdatePersonReportsALostCommitAsUnknown(t *testing.T) {
-	s := testServer(t)
+// End to end through a TCP proxy that forwards COMMIT to Postgres and then
+// loses its answer. The value IS stored, so the API must not answer anything
+// the client would read as "not saved". It asks Postgres (pg_xact_status) and
+// answers 200; only when it can't even ask does it answer "stored: unknown".
+func TestUpdatePersonResolvesALostCommitAnswer(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mode proxyMode
+	}{
+		{"answer lost, Postgres reachable", proxyCut},
+		{"answer lost, and Postgres unreachable afterwards", proxyCutAndRefuse},
+		{"answer held until the save's deadline", proxyStall},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testServer(t)
+			saved := updateTimeout
+			updateTimeout = 300 * time.Millisecond // so the stall case ends at the 2.3 s deadline
+			t.Cleanup(func() { updateTimeout = saved })
+			proxied := proxiedPool(t, tc.mode)
+			t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
+
+			start := time.Now()
+			rec := doWithin(t, newServer(proxied), "PATCH", "/api/people/3", `{"weeklyHours": 33}`, 6*time.Second)
+			if took := time.Since(start); took > saveDeadline()+2*time.Second {
+				t.Errorf("answered after %v; the whole save has a %v deadline", took, saveDeadline())
+			}
+
+			var stored float64
+			if err := s.db.QueryRow(context.Background(), `SELECT weekly_hours::float8 FROM people WHERE id = 3`).Scan(&stored); err != nil {
+				t.Fatal(err)
+			}
+			if stored != 33 {
+				t.Fatalf("the proxy didn't let COMMIT through (stored %v); the test is not testing a lost answer", stored)
+			}
+			var body map[string]any
+			_ = json.NewDecoder(rec.Body).Decode(&body)
+			if tc.mode == proxyCutAndRefuse {
+				if body["stored"] != "unknown" {
+					t.Errorf("Postgres couldn't be asked, so the answer must be stored: unknown; got %d %v", rec.Code, body)
+				}
+			} else if rec.Code != http.StatusOK || body["weeklyHours"] != 33.0 {
+				t.Errorf("the save was stored and Postgres could be asked, so the answer must be 200 with 33; got %d %v", rec.Code, body)
+			}
+		})
+	}
+}
+
+// doWithin is do with a limit: a handler that hangs fails the test instead of
+// stalling the suite. The request's context ends at the limit too, so a hung
+// handler lets go of its connection and the test's cleanup can't block on it.
+func doWithin(t *testing.T, s *server, method, url, body string, limit time.Duration) *httptest.ResponseRecorder {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
+	t.Cleanup(cancel)
+	req := httptest.NewRequest(method, url, strings.NewReader(body)).WithContext(ctx)
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		s.routes().ServeHTTP(rec, req)
+		done <- rec
+	}()
+	select {
+	case rec := <-done:
+		if ctx.Err() != nil {
+			t.Fatalf("%s %s: no answer within %v", method, url, limit)
+		}
+		return rec
+	case <-time.After(limit + 2*time.Second):
+		t.Fatalf("%s %s: no answer within %v, and the handler ignores its context", method, url, limit)
+		return nil
+	}
+}
+
+type proxyMode int
+
+const (
+	proxyCut          proxyMode = iota // close the client side after forwarding COMMIT
+	proxyCutAndRefuse                  // ...and refuse every connection after that
+	proxyStall                         // forward COMMIT, never pass its answer back
+)
+
+func proxiedPool(t *testing.T, mode proxyMode) *pgxpool.Pool {
+	t.Helper()
 	cfg, err := pgxpool.ParseConfig(os.Getenv("DATABASE_URL"))
 	if err != nil {
 		t.Fatal(err)
@@ -350,44 +428,34 @@ func TestUpdatePersonReportsALostCommitAsUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ln.Close() })
-	go cutAfterCommit(ln, target)
+	go cutAfterCommit(ln, target, mode)
 
 	host, port, _ := net.SplitHostPort(ln.Addr().String())
 	cfg.ConnConfig.Host = host
 	p, _ := strconv.Atoi(port)
 	cfg.ConnConfig.Port = uint16(p)
 	cfg.MaxConns = 1
-	proxied, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(proxied.Close)
-	t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
-
-	rec := do(t, &server{db: proxied}, "PATCH", "/api/people/3", `{"weeklyHours": 33}`)
-
-	var stored float64
-	if err := s.db.QueryRow(context.Background(), `SELECT weekly_hours::float8 FROM people WHERE id = 3`).Scan(&stored); err != nil {
-		t.Fatal(err)
-	}
-	if stored != 33 {
-		t.Fatalf("the proxy didn't let COMMIT through (stored %v); the test is not testing a lost answer", stored)
-	}
-	var body map[string]string
-	_ = json.NewDecoder(rec.Body).Decode(&body)
-	if body["stored"] != "unknown" {
-		t.Errorf("the save was stored but the API answered %d %v, which reads as \"not saved\"", rec.Code, body)
-	}
+	t.Cleanup(pool.Close)
+	return pool
 }
 
 // cutAfterCommit proxies Postgres connections. Once a client sends COMMIT, it
-// forwards it, waits for Postgres to act on it, and closes the client side
-// without passing the answer back.
-func cutAfterCommit(ln net.Listener, target string) {
+// forwards it and then, depending on mode, cuts the client off or holds the
+// answer back.
+func cutAfterCommit(ln net.Listener, target string, mode proxyMode) {
+	var refuse atomic.Bool
 	for {
 		client, err := ln.Accept()
 		if err != nil {
 			return
+		}
+		if refuse.Load() {
+			client.Close()
+			continue
 		}
 		go func() {
 			server, err := net.Dial("tcp", target)
@@ -401,6 +469,9 @@ func cutAfterCommit(ln net.Listener, target string) {
 				for {
 					n, err := server.Read(buf)
 					if cut.Load() {
+						if mode == proxyStall {
+							continue // swallow the answer, keep the connection open
+						}
 						return
 					}
 					if n > 0 {
@@ -421,8 +492,11 @@ func cutAfterCommit(ln net.Listener, target string) {
 						cut.Store(true)
 					}
 					server.Write(buf[:n])
-					if committing {
+					if committing && mode != proxyStall {
 						time.Sleep(300 * time.Millisecond) // let Postgres commit
+						if mode == proxyCutAndRefuse {
+							refuse.Store(true)
+						}
 						client.Close()
 						server.Close()
 						return
@@ -434,5 +508,78 @@ func cutAfterCommit(ln net.Listener, target string) {
 				}
 			}
 		}()
+	}
+}
+
+// The order that makes "the server answers first" true: Postgres gives up on
+// the UPDATE, then the API on the whole save, then the client.
+func TestSaveDeadlineChain(t *testing.T) {
+	const clientSaveTimeout = 15 * time.Second // SAVE_TIMEOUT_MS in web/src/api.ts
+	if updateTimeout != 10*time.Second || saveDeadline() != 12*time.Second {
+		t.Errorf("updateTimeout %v, saveDeadline %v; the documented chain is 10 s < 12 s < 15 s", updateTimeout, saveDeadline())
+	}
+	if !(updateTimeout < saveDeadline() && saveDeadline() < clientSaveTimeout) {
+		t.Errorf("the chain must be updateTimeout < saveDeadline < the client's timeout")
+	}
+}
+
+// With no connection free in the pool, a save must still end at its deadline
+// with a definite "not saved" instead of waiting for ever.
+func TestUpdatePersonGivesUpWaitingForAConnection(t *testing.T) {
+	s := testServer(t)
+	cfg, err := pgxpool.ParseConfig(os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.MaxConns = 1
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	held, err := pool.Acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(held.Release)
+
+	saved := updateTimeout
+	updateTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { updateTimeout = saved })
+
+	start := time.Now()
+	rec := doWithin(t, newServer(pool), "PATCH", "/api/people/3", `{"weeklyHours": 21}`, 5*time.Second)
+	took := time.Since(start)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status %d, want 503", rec.Code)
+	}
+	if took < saveDeadline()-100*time.Millisecond || took > saveDeadline()+time.Second {
+		t.Errorf("answered after %v, want about the %v deadline", took, saveDeadline())
+	}
+	var stored float64
+	if err := s.db.QueryRow(context.Background(), `SELECT weekly_hours::float8 FROM people WHERE id = 3`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != 20 {
+		t.Errorf("stored %v, want the seeded 20", stored)
+	}
+}
+
+func TestHealthDoesNotLeakDatabaseErrors(t *testing.T) {
+	s := testServer(t)
+	logs := captureLog(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rec := httptest.NewRecorder()
+	s.routes().ServeHTTP(rec, httptest.NewRequest("GET", "/api/health", nil).WithContext(ctx))
+	var body map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if rec.Code != http.StatusServiceUnavailable || body["error"] != "database unavailable" {
+		t.Errorf("got %d %v", rec.Code, body)
+	}
+	if !strings.Contains(logs.String(), "health:") {
+		t.Errorf("the cause was not logged: %q", logs.String())
 	}
 }
