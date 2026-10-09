@@ -99,7 +99,8 @@ test('save network abort says the save could not be confirmed (it may have been 
   )
   await expect(editorHint(page)).not.toContainText('Not saved')
   await expect(editor(page).getByRole('button', { name: 'Retry', exact: true })).toBeVisible()
-  await expect(capButton(page, DEE.name)).toHaveText('40h')
+  // The grid shows the last value it can vouch for, and says it can't vouch for it.
+  await expect(capButton(page, DEE.name)).toHaveText('40h ?')
   await expectCell(page, DEE.name, 1, '45 +5', 'over')
 })
 
@@ -260,4 +261,40 @@ test('a failed save stays visible when "Only over capacity" hides its row', asyn
   await expect(page.locator('tbody th.name', { hasText: 'Ana Ferreira' })).toHaveCount(0)
   await expect(editorHint(page)).toBeInViewport()
   await expect(editorInput(page, 'Ana Ferreira')).toHaveValue('50')
+})
+
+// Chrome moves focus to the page when a focused button becomes disabled; after
+// a failed save, Escape then reached nothing and the editor stayed open.
+test('pressing Save keeps focus in the editor, so Escape works after a failure', async ({ page }) => {
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  const hold = deferred()
+  await routeApi(page, async (route, req) => {
+    if (!isPatch(req)) return false
+    await hold.promise
+    await settle(() =>
+      route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"could not update person"}' }),
+    )
+    return true
+  })
+  await openEditor(page, DEE.name)
+  await editorInput(page, DEE.name).fill('50')
+  await page.keyboard.press('Tab') // onto Save
+  await page.keyboard.press('Enter')
+  const save = editor(page).getByRole('button', { name: 'Saving…' })
+  await expect(save).toBeFocused()
+  hold.release()
+  await expect(editorHint(page)).toHaveText('Not saved. could not update person')
+  await page.keyboard.press('Escape')
+  await expect(editor(page)).toHaveCount(0)
+  await expect(capButton(page, DEE.name)).toBeFocused()
+})
+
+test("switching to another person's editor puts the cursor in their field", async ({ page }) => {
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  await openEditor(page, DEE.name)
+  await capButton(page, 'Ana Ferreira').click()
+  await expect(editorInput(page, 'Ana Ferreira')).toBeFocused()
+  await page.keyboard.press('Control+A')
+  await page.keyboard.type('36')
+  await expect(editorInput(page, 'Ana Ferreira')).toHaveValue('36')
 })

@@ -43,8 +43,13 @@ export function isDefiniteFailure(err: unknown): boolean {
   return err instanceof ApiError && err.fromApi && !err.outcomeUnknown
 }
 
-/** How long a save waits for an answer. Longer than the API's own 10 s limit
- * (updateTimeout in api/people.go), so a stuck database gives a definite answer. */
+/**
+ * How long a save waits for an answer. The chain, so the server always answers
+ * first: Postgres gives up on the UPDATE after 10 s (updateTimeout in
+ * api/people.go), the API gives up on the whole save after 12 s, the client
+ * after 15 s. A timeout here therefore means the answer was lost, not that the
+ * server is still deciding.
+ */
 export const SAVE_TIMEOUT_MS = 15_000
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {

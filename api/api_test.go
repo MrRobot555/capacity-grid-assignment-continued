@@ -10,15 +10,20 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -241,7 +246,7 @@ func TestUpdatePersonGivesUpOnALockedRow(t *testing.T) {
 	if stored != 20 {
 		t.Errorf("stored weekly_hours = %v, want the seeded 20", stored)
 	}
-	if !strings.Contains(logs.String(), "update person 3: gave up") {
+	if !strings.Contains(logs.String(), "update person 3:") || !strings.Contains(logs.String(), "57014") {
 		t.Errorf("the failure was not logged; log output: %q", logs.String())
 	}
 }
@@ -306,5 +311,128 @@ func TestUpdatePersonAcceptsTheWholeWeek(t *testing.T) {
 	t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
 	if rec := do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 168}`); rec.Code != http.StatusOK {
 		t.Errorf("168 h (every hour of the week) must be accepted: status %d", rec.Code)
+	}
+}
+
+func TestSaveErrorResponse(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		err    error
+		status int
+		stored string
+	}{
+		{"COMMIT with no answer", commitOutcome(errors.New("conn closed")), 500, "unknown"},
+		{"COMMIT refused by Postgres", commitOutcome(&pgconn.PgError{Code: "40001"}), 500, ""},
+		{"statement timeout", &pgconn.PgError{Code: "57014"}, 503, ""},
+		{"no connection in time", fmt.Errorf("begin: %w", context.DeadlineExceeded), 503, ""},
+		{"unknown person", pgx.ErrNoRows, 404, ""},
+		{"anything else", errors.New("boom"), 500, ""},
+	} {
+		status, body := saveErrorResponse(tc.err)
+		if status != tc.status || body["stored"] != tc.stored || body["error"] == "" {
+			t.Errorf("%s: got %d %v, want %d with stored=%q", tc.name, status, body, tc.status, tc.stored)
+		}
+	}
+}
+
+// End to end through a TCP proxy that forwards COMMIT to Postgres and then cuts
+// the API off before the answer comes back: the value IS stored, so the API
+// must not answer anything the client would read as "not saved".
+func TestUpdatePersonReportsALostCommitAsUnknown(t *testing.T) {
+	s := testServer(t)
+	cfg, err := pgxpool.ParseConfig(os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := net.JoinHostPort(cfg.ConnConfig.Host, strconv.Itoa(int(cfg.ConnConfig.Port)))
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go cutAfterCommit(ln, target)
+
+	host, port, _ := net.SplitHostPort(ln.Addr().String())
+	cfg.ConnConfig.Host = host
+	p, _ := strconv.Atoi(port)
+	cfg.ConnConfig.Port = uint16(p)
+	cfg.MaxConns = 1
+	proxied, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(proxied.Close)
+	t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
+
+	rec := do(t, &server{db: proxied}, "PATCH", "/api/people/3", `{"weeklyHours": 33}`)
+
+	var stored float64
+	if err := s.db.QueryRow(context.Background(), `SELECT weekly_hours::float8 FROM people WHERE id = 3`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != 33 {
+		t.Fatalf("the proxy didn't let COMMIT through (stored %v); the test is not testing a lost answer", stored)
+	}
+	var body map[string]string
+	_ = json.NewDecoder(rec.Body).Decode(&body)
+	if body["stored"] != "unknown" {
+		t.Errorf("the save was stored but the API answered %d %v, which reads as \"not saved\"", rec.Code, body)
+	}
+}
+
+// cutAfterCommit proxies Postgres connections. Once a client sends COMMIT, it
+// forwards it, waits for Postgres to act on it, and closes the client side
+// without passing the answer back.
+func cutAfterCommit(ln net.Listener, target string) {
+	for {
+		client, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go func() {
+			server, err := net.Dial("tcp", target)
+			if err != nil {
+				client.Close()
+				return
+			}
+			var cut atomic.Bool
+			go func() {
+				buf := make([]byte, 64<<10)
+				for {
+					n, err := server.Read(buf)
+					if cut.Load() {
+						return
+					}
+					if n > 0 {
+						client.Write(buf[:n])
+					}
+					if err != nil {
+						client.Close()
+						return
+					}
+				}
+			}()
+			buf := make([]byte, 64<<10)
+			for {
+				n, err := client.Read(buf)
+				if n > 0 {
+					committing := bytes.Contains(bytes.ToLower(buf[:n]), []byte("commit"))
+					if committing {
+						cut.Store(true)
+					}
+					server.Write(buf[:n])
+					if committing {
+						time.Sleep(300 * time.Millisecond) // let Postgres commit
+						client.Close()
+						server.Close()
+						return
+					}
+				}
+				if err != nil {
+					server.Close()
+					return
+				}
+			}
+		}()
 	}
 }

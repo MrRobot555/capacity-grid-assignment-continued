@@ -231,6 +231,12 @@ tr.editing > * {
   background-color: color-mix(in srgb, #2563eb 10%, var(--bg));
 }
 
+.cap-editor button[aria-disabled='true'] {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.cap-editor .unconfirmed,
 .cap-button .unconfirmed {
   color: var(--over);
   font-weight: 700;

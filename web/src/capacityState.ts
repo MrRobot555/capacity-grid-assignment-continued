@@ -26,6 +26,29 @@ export function formatHours(hours: number): string {
   return String(hundredths(hours) / 100)
 }
 
+/**
+ * How sure we are about a person's capacity, and how to say so. Every place
+ * that shows a capacity uses this, so none of them can claim more than we know.
+ */
+export type CapacityView = {
+  /** "40h" */
+  text: string
+  /** False when the last save got no definite answer. */
+  certain: boolean
+  /** Shown wherever the value is shown, when it isn't certain. */
+  note: string | null
+}
+
+export function capacityView(weeklyHours: number, unconfirmed: boolean): CapacityView {
+  const text = `${formatHours(weeklyHours)}h`
+  if (!unconfirmed) return { text, certain: true, note: null }
+  return {
+    text,
+    certain: false,
+    note: "The last save couldn't be confirmed, so the server may hold a different value. Saving again is safe and confirms it.",
+  }
+}
+
 export function allocationStatus(allocated: number, capacity: number): Status {
   const a = hundredths(allocated)
   const c = hundredths(capacity)
@@ -55,8 +78,9 @@ export type State = {
   confirmedAt: Record<number, number>
   /**
    * People whose last save got no definite answer, and when. The server may
-   * hold a value the grid doesn't show. Cleared only by a confirmed save or a
-   * load issued after that moment, never by anything the editor does.
+   * hold a value the grid doesn't show. Only a confirmed save of that person
+   * clears it. A load doesn't: a proxy can give up while the API is still
+   * working, so a load can read the old value just before the save commits.
    */
   unconfirmedAt: Record<number, number>
 }
@@ -104,16 +128,11 @@ export function capacityReducer(state: State, action: Action): State {
         const keepLocal = confirmed !== undefined && confirmed > action.issuedAt && p.id in people
         people[p.id] = { name: p.name, weeklyHours: keepLocal ? people[p.id].weeklyHours : p.weeklyHours }
       }
-      // A load sent after a save's outcome became unknown shows what the server holds.
-      const unconfirmedAt = Object.fromEntries(
-        Object.entries(state.unconfirmedAt).filter(([, at]) => at > action.issuedAt),
-      )
       return {
         ...state,
         loading: false,
         error: null,
         people,
-        unconfirmedAt,
         data: {
           key: action.key,
           weeks: action.response.weeks,

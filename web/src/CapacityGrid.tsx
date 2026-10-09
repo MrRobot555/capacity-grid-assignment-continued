@@ -1,6 +1,15 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type UIEvent } from 'react'
 import { isDefiniteFailure } from './api'
-import { allocationStatus, formatHours, hundredths, parseWeeklyHours, rangeKey, type Status } from './capacityState'
+import {
+  allocationStatus,
+  capacityView,
+  formatHours,
+  hundredths,
+  parseWeeklyHours,
+  rangeKey,
+  type CapacityView,
+  type Status,
+} from './capacityState'
 import {
   formatLong,
   formatShort,
@@ -213,7 +222,7 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
       {editing && editingPerson && (
         <CapacityEditor
           name={editingPerson.name}
-          confirmed={editingPerson.weeklyHours}
+          capacity={capacityView(editingPerson.weeklyHours, unconfirmedAt[editing.id] !== undefined)}
           editing={editing}
           onChange={(draft) => setEditing({ ...editing, draft, error: null, failed: false })}
           onSubmit={submit}
@@ -270,7 +279,7 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
               <Spacer height={windowStart * rowHeight} colSpan={data.weeks.length + 2} />
               {visible.slice(windowStart, windowEnd).map((row, i) => {
                 const isEditing = editing?.id === row.id
-                const unconfirmed = unconfirmedAt[row.id] !== undefined
+                const capacity = capacityView(row.weeklyHours, unconfirmedAt[row.id] !== undefined)
                 return (
                   <tr
                     key={row.id}
@@ -286,11 +295,11 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
                         type="button"
                         className="cap-button"
                         aria-label={
-                          `Weekly hours for ${row.name}: ${hours(row.weeklyHours)}` +
-                          (unconfirmed ? ', last save not confirmed' : '') +
+                          `Weekly hours for ${row.name}: ${capacity.text}` +
+                          (capacity.certain ? '' : ', last save not confirmed') +
                           '. Edit'
                         }
-                        title={unconfirmed ? "The last save couldn't be confirmed; reloading to check." : undefined}
+                        title={capacity.note ?? undefined}
                         data-person-id={row.id}
                         aria-expanded={isEditing}
                         // While a save is in flight its editor must stay open, or a
@@ -298,8 +307,8 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
                         disabled={isEditing || editing?.saving === true}
                         onClick={() => openEditor(row.id, row.weeklyHours)}
                       >
-                        {hours(row.weeklyHours)}
-                        {unconfirmed && <span className="unconfirmed"> ?</span>}
+                        {capacity.text}
+                        {!capacity.certain && <span className="unconfirmed"> ?</span>}
                       </button>
                     </td>
                     {row.allocated.map((allocated, i) => (
@@ -309,6 +318,7 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
                         week={data.weeks[i]}
                         allocated={allocated}
                         capacity={row.weeklyHours}
+                        capacityView={capacity}
                         status={row.statuses[i]}
                       />
                     ))}
@@ -329,14 +339,16 @@ function AllocationCell(props: {
   week: ISODate
   allocated: number
   capacity: number
+  capacityView: CapacityView
   status: Status
 }) {
-  const { name, week, allocated, capacity, status } = props
+  const { name, week, allocated, capacity, capacityView, status } = props
   // From the shown values, so "+N" always matches the two numbers on screen.
   const over = (hundredths(allocated) - hundredths(capacity)) / 100
   const fill = capacity > 0 ? Math.min(allocated / capacity, 1) : allocated > 0 ? 1 : 0
   const title =
-    `${name}, week of ${formatShort(week)}: ${hours(allocated)} allocated of ${hours(capacity)}` +
+    `${name}, week of ${formatShort(week)}: ${hours(allocated)} allocated of ${capacityView.text}` +
+    (capacityView.certain ? '' : ' (capacity not confirmed)') +
     (status === 'over' ? ` (${hours(over)} over)` : '')
   return (
     <td className={`alloc ${status}`} style={{ '--fill': fill } as CSSProperties} title={title}>
@@ -348,13 +360,13 @@ function AllocationCell(props: {
 
 function CapacityEditor(props: {
   name: string
-  confirmed: number
+  capacity: CapacityView
   editing: Editing
   onChange: (draft: string) => void
   onSubmit: () => void
   onCancel: () => void
 }) {
-  const { name, confirmed, editing, onChange, onSubmit, onCancel } = props
+  const { name, capacity, editing, onChange, onSubmit, onCancel } = props
   const hintId = `cap-hint-${editing.id}`
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -381,7 +393,8 @@ function CapacityEditor(props: {
       }}
     >
       <span className="cap-editor-title">
-        <strong>{name}</strong> · weekly hours (now {hours(confirmed)})
+        <strong>{name}</strong> · weekly hours (now {capacity.text}
+        {!capacity.certain && <span className="unconfirmed"> ?</span>})
       </span>
       <input
         aria-label={`Weekly hours for ${name}`}
@@ -397,14 +410,16 @@ function CapacityEditor(props: {
         readOnly={editing.saving}
         onChange={(e) => onChange(e.target.value)}
       />
-      <button type="submit" disabled={editing.saving}>
+      {/* aria-disabled, not disabled: a disabled button drops focus to the page,
+          and then Escape no longer reaches the form after a failure. */}
+      <button type="submit" aria-disabled={editing.saving}>
         {editing.saving ? 'Saving…' : editing.failed ? 'Retry' : 'Save'}
       </button>
       <button type="button" onClick={onCancel} disabled={editing.saving}>
         Cancel
       </button>
       <p id={hintId} className={editing.error ? 'hint error' : 'hint'} role={editing.error ? 'alert' : undefined}>
-        {editing.error ?? 'Changes capacity for every week, past and future.'}
+        {editing.error ?? capacity.note ?? 'Changes capacity for every week, past and future.'}
       </p>
     </form>
   )

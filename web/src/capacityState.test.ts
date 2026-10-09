@@ -3,6 +3,7 @@ import type { CapacityResponse } from './api'
 import {
   allocationStatus,
   capacityReducer,
+  capacityView,
   formatHours,
   initialState,
   parseWeeklyHours,
@@ -41,6 +42,15 @@ describe('allocationStatus', () => {
     // 0.995 is shown as "0.99": against 1 allocated that is over.
     expect(formatHours(0.995)).toBe('0.99')
     expect(allocationStatus(1, 0.995)).toBe('over')
+  })
+
+  it('describes an unconfirmed capacity wherever it is shown', () => {
+    expect(capacityView(40, false)).toEqual({ text: '40h', certain: true, note: null })
+    const doubt = capacityView(40, true)
+    expect(doubt.certain).toBe(false)
+    expect(doubt.note).toMatch(/may hold a different value/)
+    // Nothing claims a reload is under way: it may have failed.
+    expect(doubt.note).not.toMatch(/reload/i)
   })
 
   it('treats any allocation against zero capacity as over, without dividing', () => {
@@ -137,18 +147,24 @@ describe('capacityReducer', () => {
     expect(state.people[4].weeklyHours).toBe(50)
   })
 
-  it('keeps a person unconfirmed until a load issued after the uncertainty', () => {
+  it('keeps a person unconfirmed through any load: only a confirmed save clears it', () => {
+    // A load issued after the save failed can still read the old value: a
+    // proxy may have given up while the API went on to commit.
     const state = run(
       { type: 'fetchStarted', key: 'A', issuedAt: 1 },
-      { type: 'saveUnconfirmed', id: 4, at: 2 },
       { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) },
+      { type: 'saveUnconfirmed', id: 4, at: 2 },
+      { type: 'fetchStarted', key: 'A', issuedAt: 3 },
+      { type: 'fetchSucceeded', key: 'A', issuedAt: 3, response: response(40) },
     )
     expect(state.unconfirmedAt[4]).toBe(2)
-    const later = [
-      { type: 'fetchStarted', key: 'A', issuedAt: 3 },
-      { type: 'fetchSucceeded', key: 'A', issuedAt: 3, response: response(50) },
-    ] as Action[]
-    expect(later.reduce(capacityReducer, state).unconfirmedAt[4]).toBeUndefined()
+    // ...while the load still updates the value shown.
+    expect(state.people[4].weeklyHours).toBe(40)
+  })
+
+  it("keeps each person's doubt separately", () => {
+    const state = run({ type: 'saveUnconfirmed', id: 4, at: 1 }, { type: 'saveUnconfirmed', id: 1, at: 2 })
+    expect(state.unconfirmedAt).toEqual({ 4: 1, 1: 2 })
   })
 
   it('clears "unconfirmed" on a confirmed save, and nothing else does', () => {

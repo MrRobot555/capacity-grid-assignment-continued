@@ -19,9 +19,10 @@ import (
 // contract.
 const maxWeeklyHours = 168
 
-// updateTimeout bounds how long a save may take in the database, e.g. waiting
-// behind a row lock held elsewhere. The client waits longer (SAVE_TIMEOUT_MS in web/src/api.ts),
-// so when the server gives up first the manager gets a definite "not saved".
+// updateTimeout bounds how long a save's UPDATE may take in the database, e.g.
+// waiting behind a row lock held elsewhere. The whole save gets 2 s more, and
+// the client waits longer still (SAVE_TIMEOUT_MS in web/src/api.ts), so the
+// server's definite "not saved" arrives before the client gives up.
 var updateTimeout = 10 * time.Second
 
 // errOutcomeUnknown marks a save whose COMMIT got no answer: the connection
@@ -71,28 +72,16 @@ func (s *server) handleUpdatePerson(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, err := s.updateWeeklyHours(r.Context(), int(id), hours)
-	var pgErr *pgconn.PgError
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, http.StatusNotFound, "person not found")
-		return
-	}
-	if errors.Is(err, errOutcomeUnknown) {
-		log.Printf("update person %d: %v", id, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{
-			"error":  "the save couldn't be confirmed",
-			"stored": "unknown",
-		})
-		return
-	}
-	if errors.As(err, &pgErr) && pgErr.Code == "57014" { // query_canceled: statement_timeout
-		log.Printf("update person %d: gave up after %v: %v", id, updateTimeout, err)
-		writeError(w, http.StatusServiceUnavailable, "the database didn't respond in time")
-		return
-	}
+	// One deadline for the whole save, including waiting for a pooled
+	// connection. It is longer than the database's own limit (updateTimeout),
+	// so a stuck UPDATE gets Postgres's definite answer first.
+	ctx, cancel := context.WithTimeout(r.Context(), updateTimeout+2*time.Second)
+	defer cancel()
+	p, err := s.updateWeeklyHours(ctx, int(id), hours)
 	if err != nil {
 		log.Printf("update person %d: %v", id, err)
-		writeError(w, http.StatusInternalServerError, "could not update person")
+		status, body := saveErrorResponse(err)
+		writeJSON(w, status, body)
 		return
 	}
 
@@ -140,4 +129,25 @@ func commitOutcome(err error) error {
 		return err
 	}
 	return fmt.Errorf("%w: %v", errOutcomeUnknown, err)
+}
+
+// saveErrorResponse says what a failed save tells the client. Only "stored":
+// "unknown" lets the client know the value may be stored anyway; every other
+// answer means nothing was stored.
+func saveErrorResponse(err error) (int, map[string]string) {
+	var pgErr *pgconn.PgError
+	switch {
+	case errors.Is(err, errOutcomeUnknown):
+		return http.StatusInternalServerError, map[string]string{
+			"error":  "the save couldn't be confirmed",
+			"stored": "unknown",
+		}
+	case errors.Is(err, pgx.ErrNoRows):
+		return http.StatusNotFound, map[string]string{"error": "person not found"}
+	case errors.As(err, &pgErr) && pgErr.Code == "57014", // query_canceled: statement_timeout
+		errors.Is(err, context.DeadlineExceeded): // e.g. no pooled connection in time; COMMIT never sent
+		return http.StatusServiceUnavailable, map[string]string{"error": "the database didn't respond in time"}
+	default:
+		return http.StatusInternalServerError, map[string]string{"error": "could not update person"}
+	}
 }

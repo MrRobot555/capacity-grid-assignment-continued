@@ -113,3 +113,11 @@ left unfinished. Append as you go; a line or two per entry is right.
   - Focus moves only on the user's own actions, and returns to the row's button (or the grid region, if the row was filtered away) only if it was still in the editor.
 - Also: status, overage and text all round through one `hundredths()`. Gates were added for every round-2 test gap.
 - The save tests now use a small fake server with state. A mock that always answers 40 can't express "the save was stored but its answer was lost", which is exactly the case that matters.
+
+## Review round 3 → the save-outcome area redesigned a second time
+
+- After its round-2 redesign the area failed three more times (grid, panel title, tooltip), all for one reason. The design assumed "a load issued after the uncertainty proves the server's value". Behind a proxy that gives up without cancelling, the load reads the old value and the save commits a moment later. Counting again from zero after a redesign, three recurrences meant redesigning it again.
+- **New premise:** only a confirmed save of that person clears doubt. Loads still refresh the value shown, but the "?" stays until a save is confirmed. Saving again is idempotent, and the note says so.
+- **New structure:** one presenter, `capacityView`, used by every place a capacity appears (button, its accessible name, tooltip, cell titles, the panel's title and hint). No display site can claim more than is known.
+- **API:** one deadline for the whole save, Begin through Commit. The timeout chain is 10 s (Postgres), 12 s (API), 15 s (client), so the server answers first. The error mapping is one tested function, and a TCP-proxy test that cuts the answer after COMMIT pins `stored: unknown` end to end.
+- **Save button:** `aria-disabled` instead of `disabled`. A disabled, focused button drops focus to the page in Chrome.

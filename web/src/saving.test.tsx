@@ -108,6 +108,7 @@ describe('what a failed save says', () => {
     ['the answer is lost', 'store-and-lose-answer' as Outcome],
     ['our API itself cannot tell (lost COMMIT)', 'commit-unknown' as Outcome],
     ["a proxy's HTML page answers, even with a 500", 'html-500' as Outcome],
+    ['the save times out', 'timeout' as Outcome],
   ])('says "Couldn\'t confirm" when %s', async (_, outcome) => {
     fakeServer([outcome])
     renderGrid()
@@ -135,17 +136,42 @@ describe('what a failed save says', () => {
 })
 
 describe('after a save with no definite answer', () => {
-  it('reloads at once, so the grid shows what the server holds, whatever the manager does next', async () => {
+  it('reloads at once, and keeps the doubt until a save is confirmed', async () => {
     const server = fakeServer(['store-and-lose-answer'])
     renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    const before = server.loads()
     await edit('Dee Okafor', '50')
     await screen.findByRole('alert')
 
-    // Going straight to someone else's editor (no Cancel, no Escape) used to
-    // drop the uncertainty silently, leaving Dee at 40h while the server held 50.
+    // Nothing else happens, yet the grid catches up with the server...
+    await waitFor(() => expect(server.loads()).toBe(before + 1))
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent('50h ?'))
+    // ...the editor says how sure it is, keeps the typed value...
+    expect(screen.getByText(/weekly hours \(now 50h/)).toHaveTextContent('now 50h ?')
+    expect(screen.getByLabelText('Weekly hours for Dee Okafor')).toHaveValue(50)
+    // ...and the doubt is spoken too, not only drawn.
+    expect(capButton('Dee Okafor')).toHaveAccessibleName(/last save not confirmed/)
+
+    // Going straight to someone else's editor doesn't lose any of it.
     fireEvent.click(capButton('Ana Ferreira'))
-    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent('50h'))
+    expect(capButton('Dee Okafor')).toHaveTextContent('50h ?')
     expect(server.hours[4]).toBe(50)
+  })
+
+  it('keeps saying the value is unsure after the manager types or reopens', async () => {
+    const server = fakeServer(['store-and-lose-answer'])
+    renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    server.failLoads(true)
+    await edit('Dee Okafor', '50')
+    await screen.findByRole('alert')
+    fireEvent.change(screen.getByLabelText('Weekly hours for Dee Okafor'), { target: { value: '45' } })
+    expect(screen.getByText(/may hold a different value/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(capButton('Dee Okafor'))
+    expect(screen.getByText(/weekly hours \(now 40h/)).toHaveTextContent('now 40h ?')
+    expect(screen.getByText(/may hold a different value/)).toBeInTheDocument()
   })
 
   it('a later "Not saved" does not erase the earlier uncertainty', async () => {
@@ -197,6 +223,7 @@ describe('the editor', () => {
 
     const input = screen.getByLabelText('Weekly hours for Dee Okafor')
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Saving…' })).toHaveAttribute('aria-disabled', 'true')
     expect(input).toHaveAttribute('readonly')
     expect(capButton('Ana Ferreira')).toBeDisabled()
     fireEvent.keyDown(input, { key: 'Escape' })
@@ -240,6 +267,37 @@ describe('the editor', () => {
   })
 })
 
+describe('the editor while saving', () => {
+  it("disables the person's own capacity button while their editor is open", async () => {
+    fakeServer([])
+    renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    fireEvent.click(capButton('Dee Okafor'))
+    expect(capButton('Dee Okafor')).toBeDisabled()
+  })
+
+  it('survives a range change while a save is in flight, and shows its failure', async () => {
+    let failSave!: () => void
+    const server = fakeServer([])
+    const load = vi.mocked(fetch).getMockImplementation()!
+    vi.mocked(fetch).mockImplementation(async (url, init) =>
+      init?.method === 'PATCH'
+        ? new Promise<Response>((resolve) => {
+            failSave = () =>
+              resolve(new Response(JSON.stringify({ error: 'could not update person' }), { status: 500 }))
+          })
+        : load(url, init),
+    )
+    const { rerender } = render(<CapacityGrid from="2026-01-05" to="2026-01-18" onRangeChange={() => {}} />)
+    await edit('Dee Okafor', '50')
+    await screen.findByRole('button', { name: 'Saving…' })
+    rerender(<CapacityGrid from="2026-01-12" to="2026-01-25" onRangeChange={() => {}} />)
+    await act(async () => failSave())
+    expect(await screen.findByRole('alert')).toHaveTextContent('Not saved. could not update person')
+    expect(server.patches()).toHaveLength(1)
+  })
+})
+
 describe('focus when the editor closes', () => {
   it('returns to the capacity button after Escape', async () => {
     fakeServer([])
@@ -267,6 +325,28 @@ describe('focus when the editor closes', () => {
     search.focus()
     await act(async () => server.release())
     await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    expect(search).toHaveFocus()
+  })
+
+  it('stays where the manager put it if they moved on and the save then failed', async () => {
+    let failSave!: () => void
+    fakeServer([])
+    const load = vi.mocked(fetch).getMockImplementation()!
+    vi.mocked(fetch).mockImplementation(async (url, init) =>
+      init?.method === 'PATCH'
+        ? new Promise<Response>((resolve) => {
+            failSave = () =>
+              resolve(new Response(JSON.stringify({ error: 'could not update person' }), { status: 500 }))
+          })
+        : load(url, init),
+    )
+    renderGrid()
+    await edit('Dee Okafor', '50')
+    await screen.findByRole('button', { name: 'Saving…' })
+    const search = screen.getByLabelText('Find person')
+    search.focus()
+    await act(async () => failSave())
+    await screen.findByRole('alert')
     expect(search).toHaveFocus()
   })
 

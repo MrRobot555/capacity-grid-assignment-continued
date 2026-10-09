@@ -72,6 +72,20 @@ just the reported line), REJECTED (with a reason), FOLLOWUP (real, but out of sc
 
 **Round 1 status:** all 21 findings fixed. Each fix has a test that fails on the pre-fix code (checked by swapping the old source back in), except the coverage-only gaps (G1 404, G5, G6, G11, filter), which pin behaviour that was already right. Go 9, Vitest 60 and Playwright 25 pass, and the build passes. **The cycle is not closed:** round 2 (a re-review of these fixes) is next. (R1-X1 has since been found and fixed on the local `post-submission` branch.)
 
+| R3-A1 | 3 | High | (new evidence against R2-A1/A2) The redesign assumed a load issued after an unknown outcome proves the server's value. Behind a proxy that answers without cancelling, the reload reads 40 and clears "?", then the queued save commits 50: grid 40h with no marker, and re-entering 40 sends nothing. Also: `Begin` (waiting for a pooled connection) had no time limit | RESOLVED | adversarial p1/p1b (needs such a proxy; Vite cancels) |
+| R3-A2 | 3 | Medium | The editor panel says "(now 40h)" unqualified while the outcome is unknown; after typing or reopening nothing warns | RESOLVED | p2 |
+| R3-A3 | 3 | Low | Pressing Save disables the focused button, so focus falls to BODY; after a failure Escape does nothing | RESOLVED | p3 |
+| R3-A4 | 3 | Low | The "?" tooltip says "reloading to check" even after the reload has failed | RESOLVED | code path |
+| R3-G1 | 3 | High | The timeout test only checks "didn't answer within 15 seconds", text present in both messages; a timeout classed as definite (M3) survives every suite | RESOLVED | M3 |
+| R3-G2 | 3 | High | TestCommitOutcome tests the helper, not the wiring: never calling it (G1), dropping the handler branch (G2, G6) or the `stored` field (G3) all survive | RESOLVED | G1–G3, G6 |
+| R3-G3 | 3 | High | Nothing checks `unconfirmedAt` is per person: replacing the map (R6) wipes another person's doubt and survives every suite | RESOLVED | R6 |
+| R3-G4 | 3 | Medium | A failed save leaving focus where the manager moved it is untested (F1 survives) | RESOLVED | F1 |
+| R3-G5 | 3 | Medium | Switching person (Dee's panel open, click Ana) moving focus into Ana's input is untested (F2 survives) | RESOLVED | F2 (e2e only) |
+| R3-G6 | 3 | Medium | A save in flight surviving a range change is untested (P4 survives) | RESOLVED | P4 |
+| R3-G7 | 3 | Low | "reloads at once" clicks Ana before checking, so reloading only when an editor opens passes (U2) | RESOLVED | U2 |
+| R3-G8 | 3 | Low | The panel's "(now Xh)" is never asserted (P1) | RESOLVED | P1 |
+| R3-G9 | 3 | Low | Own capacity button disabled while editing is untested (P2) | RESOLVED | P2 |
+| R3-G10 | 3 | Low | The accessible name ", last save not confirmed" is untested (M8) | RESOLVED | M8 |
 **Round 2 status:** 18 findings. The two areas that recurred 5 times were redesigned, not patched (see Recurrence). Every finding has a gate, and every gate was checked against the code it guards:
 - The new Vitest gates: 8 fail on the pre-redesign code. One gate of mine passed on the old code because it went through the already-fixed path; it was rewritten to take the reported path and now fails there.
 - The new e2e editor gates: all 3 fail on the pre-redesign code.
@@ -79,14 +93,23 @@ just the reported line), REJECTED (with a reason), FOLLOWUP (real, but out of sc
 
 Go 13, Vitest 66 and Playwright 32 pass, and the build passes. My own test mistake this round: the date tests assumed one Tab leaves a date input, but Chrome's first Tab lands on the field's calendar button. The tests now blur explicitly. **Next: round 3 (re-review).**
 
+**Round 3 status:** 14 findings. The save-outcome area recurred 3 times *after* its round-2 redesign, so it was redesigned again:
+- **New premise:** only a confirmed save of that person clears doubt. A load updates the value shown but not the doubt.
+- **New structure:** one presenter, `capacityView`, for every place a capacity is shown.
+- **API:** one deadline for the whole save; error mapping in one tested function; a permanent TCP-proxy test that cuts the answer after COMMIT.
+
+Gate checks: 9 Vitest mutations from the audit (R6, F1, P2, P4, M3, M8, P1, U2, plus "loads clear the doubt") and 2 browser ones (F2, Save focus) are now caught. G1 (commitOutcome unwired) fails the proxy test with an explicit message. Go 15, Vitest 73 and Playwright 34 pass, and the build passes. **Next: round 4.**
+
 ## Recurrence (standing rule: a 3rd recurrence in one area means redesign, not another patch)
 
-Counted per area across the whole register, including occurrences from before the rule.
+Counted per area across the whole register, including occurrences from before the rule. After a redesign, occurrences are counted again from zero, so the redesign itself is held to the same rule.
 
 | Area | Occurrences | Count | Action |
 |------|-------------|-------|--------|
 | The UI asserting a save outcome it doesn't know | R1-A1, R2-A1, R2-A2, R2-A4, R2-A6 | 5 | **REDESIGN (round 2):** "outcome unknown" moves from the editor into the reducer, per person. Only a confirmed save, or a load issued after the uncertainty began, clears it. The range reloads the moment an outcome is unknown. One function (`isDefiniteFailure`) decides every message. The API reports a lost COMMIT as `stored: unknown` |
 | The editor living inside a virtualised, filterable row (focus, visibility of its error) | R1-A3, R1-A6, R2-A3, R2-A5, R2-A8 | 5 | **REDESIGN (round 2):** the editor leaves the rows and becomes one panel docked above the grid, so scrolling or filtering can't unmount it, re-focus it or hide its error. The off-screen banner, "Show" and visibility detection are removed. Focus moves only on the user's own actions, and comes back to the row's button only if it was still in the editor |
+| ↳ same area, since the round-2 redesign | R3-A1, R3-A2, R3-A4 | 3 | **REDESIGN AGAIN (round 3).** The premise was wrong ("a later load proves the value"), and certainty was decided separately at each place a capacity is shown. New premise: only a confirmed save of *that person* clears doubt; loads update the value shown but never the doubt. New structure: one presenter (`capacityView`) gives the text, marker and explanation to every place a capacity appears. API: one deadline for the whole save, Begin through Commit |
+| ↳ editor area, since the round-2 redesign | R3-A3 | 1 | patch |
 | Status vs displayed value rounding | R1-A8, R2-A7 | 2 | patch: one `hundredths()` used by status, overage and text |
 | Typing into date fields | R1-A2 | 1 | patch |
 | Server errors not logged | R1-A9 | 1 | patch |
