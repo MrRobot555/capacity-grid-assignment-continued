@@ -142,7 +142,9 @@ describe('capacityReducer', () => {
       { type: 'fetchSucceeded', key: 'B', issuedAt: 2, response: response(40) },
     )
     expect(state.data?.key).toBe('B')
-    expect(state.people[4].weeklyHours).toBe(50)
+    // The whole row, version included: a stale version beside the kept hours
+    // would make the next save a false "changed on the server".
+    expect(state.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 50, version: 'v2' })
   })
 
   it('keeps a person unsure through any load while a save is being retried or was given up', () => {
@@ -156,6 +158,19 @@ describe('capacityReducer', () => {
       expect(certaintyOf(state, 4)).not.toBe('certain')
       expect(state.people[4].weeklyHours).toBe(40) // the load still updates the value shown
     }
+  })
+
+  it("takes a newer version from a later load (someone else saved meanwhile)", () => {
+    const first = run(
+      { type: 'fetchStarted', key: 'A', issuedAt: 1 },
+      { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) },
+    )
+    const later = { ...response(30), people: response(30).people.map((p) => (p.id === 4 ? { ...p, version: 'v3' } : p)) }
+    const reloaded = [
+      { type: 'fetchStarted', key: 'A', issuedAt: 2 },
+      { type: 'fetchSucceeded', key: 'A', issuedAt: 2, response: later },
+    ] as Action[]
+    expect(reloaded.reduce(capacityReducer, first).people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 30, version: 'v3' })
   })
 
   it("keeps the row's version from loads and from saves, for the next If-Match", () => {

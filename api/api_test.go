@@ -687,3 +687,44 @@ func TestHealthDoesNotLeakDatabaseErrors(t *testing.T) {
 		t.Errorf("the cause was not logged: %q", logs.String())
 	}
 }
+
+func TestIfMatchIsReadAsInHTTP(t *testing.T) {
+	for _, tc := range []struct {
+		header  []string
+		version string
+		ok      bool
+	}{
+		{nil, "", true},           // no header: unconditional
+		{[]string{"*"}, "", true}, // any existing row
+		{[]string{`"812"`}, "812", true},
+		{[]string{`W/"812"`}, "812", true},
+		{[]string{` "812" `}, "812", true},
+		{[]string{`""`}, "", false}, // an empty version must not mean "unconditional"
+		{[]string{`" "`}, "", false},
+		{[]string{`812`}, "", false}, // not a quoted tag
+	} {
+		version, ok := parseIfMatch(tc.header)
+		if version != tc.version || ok != tc.ok {
+			t.Errorf("If-Match %q: got (%q, %v), want (%q, %v)", tc.header, version, ok, tc.version, tc.ok)
+		}
+	}
+}
+
+// The client always sends If-Match, so an unknown person must come back as
+// 404 on that path too, not as a "changed" row.
+func TestUnknownPersonIsNotFoundWithIfMatch(t *testing.T) {
+	s := testServer(t)
+	if rec := patchIfMatch(t, s, "999999", "1", `{"weeklyHours": 10}`); rec.Code != http.StatusNotFound {
+		t.Errorf("status %d %s, want 404", rec.Code, rec.Body)
+	}
+	req := httptest.NewRequest("PATCH", "/api/people/3", strings.NewReader(`{"weeklyHours": 21}`))
+	req.Header.Set("If-Match", `""`)
+	rec := httptest.NewRecorder()
+	s.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("empty If-Match: status %d, want 400", rec.Code)
+	}
+	if h := storedHours(t, s, 3); h != 20 {
+		t.Errorf("stored %v, want the seeded 20", h)
+	}
+}

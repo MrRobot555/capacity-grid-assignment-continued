@@ -17,7 +17,7 @@ type Outcome =
   | 'store' // store it and answer 200
   | 'store-and-lose-answer' // store it, then the connection drops
   | 'lose-request' // the request never reaches the API
-  | 'refuse' // our API's JSON 500: nothing stored
+  | 'refuse' // our API's JSON 500 before it could even try (e.g. no database connection): nothing stored
   | 'commit-unknown' // stored, but the API couldn't tell (its COMMIT got no answer)
   | 'html-500' // a proxy's error page after the API stored it
   | 'timeout' // stored, but the client gave up waiting
@@ -53,6 +53,7 @@ function fakeServer(outcomes: Outcome[]) {
     const outcome = outcomes.shift() ?? 'store'
     if (outcome === 'lose-request') throw new TypeError('Failed to fetch')
     if (outcome === 'no-answer') throw new DOMException('signal timed out', 'TimeoutError')
+    if (outcome === 'refuse') return json(500, { error: 'could not update person' })
     if (ifMatch !== row(id).version) {
       return json(412, { error: 'the weekly hours were changed on the server since they were loaded', current: row(id) })
     }
@@ -63,8 +64,6 @@ function fakeServer(outcomes: Outcome[]) {
       case 'store-and-lose-answer':
         set(id, value)
         throw new TypeError('Failed to fetch')
-      case 'refuse':
-        return json(500, { error: 'could not update person' })
       case 'commit-unknown':
         set(id, value)
         return json(500, { error: "the save couldn't be confirmed", stored: 'unknown' })
@@ -156,7 +155,7 @@ describe('what a failed save says', () => {
     renderGrid()
     await edit('Dee Okafor', '50')
     const alert = await screen.findByRole('alert')
-    expect(alert).toHaveTextContent(`Couldn't confirm the save after ${SAVE_ATTEMPTS} tries`)
+    expect(alert).toHaveTextContent("Couldn't confirm the save")
     expect(alert).toHaveTextContent("didn't answer within 15 seconds")
     expect(alert).not.toHaveTextContent('Not saved')
     expect(server.patches()).toHaveLength(SAVE_ATTEMPTS)
@@ -184,7 +183,7 @@ describe('what a failed save says', () => {
     }
     await vi.advanceTimersByTimeAsync(60_000)
     expect(server.patches()).toHaveLength(5)
-    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't confirm the save after 5 tries")
+    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't confirm the save")
   })
 
   it('gives each attempt 15 seconds, longer than the API gives it (12 s)', async () => {
@@ -239,8 +238,8 @@ describe('when the row changed on the server', () => {
     await waitFor(() => expect(server.hours[4]).toBe(50))
   })
 
-  // The answer to the first attempt is lost; before the repeat, another
-  // manager saves 30. The repeat must neither overwrite 30 nor claim 50.
+  // The first attempt is lost; before the repeat, another manager saves 30.
+  // The repeat must neither overwrite 30 nor claim either outcome for ours.
   it('does not let a repeat overwrite a change made in between', async () => {
     const server = fakeServer(['lose-request'])
     renderGrid()
@@ -252,9 +251,68 @@ describe('when the row changed on the server', () => {
       return original(url, init)
     })
     await edit('Dee Okafor', '50')
-    expect(await screen.findByRole('alert')).toHaveTextContent('changed on the server since you loaded them (now 30h)')
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Someone else changed the weekly hours on the server (now 30h)')
+    expect(alert).toHaveTextContent('your earlier attempt may have been stored before that')
+    expect(alert).not.toHaveTextContent('Not saved')
     expect(server.hours[4]).toBe(30)
     expect(capButton('Dee Okafor')).toHaveTextContent(/^30h$/)
+  })
+
+  // Our first attempt IS stored but its answer is lost; then another manager
+  // changes it. "Not saved" would be false: ours landed, then theirs.
+  it('never says "Not saved" when our earlier attempt may have landed before their change', async () => {
+    const server = fakeServer(['store-and-lose-answer'])
+    renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    const original = vi.mocked(fetch).getMockImplementation()!
+    let patches = 0
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      if (init?.method === 'PATCH' && ++patches === 2) server.changeElsewhere(4, 30)
+      return original(url, init)
+    })
+    await edit('Dee Okafor', '50')
+    const alert = await screen.findByRole('alert')
+    expect(alert).not.toHaveTextContent('Not saved')
+    expect(alert).toHaveTextContent('your earlier attempt may have been stored')
+    expect(capButton('Dee Okafor')).toHaveTextContent(/^30h$/)
+  })
+
+  // Someone re-saved the same value: the version moved, the hours didn't.
+  it('says the row was saved again, not "changed", when only the version moved', async () => {
+    const server = fakeServer([])
+    renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    server.changeElsewhere(4, 40)
+    await edit('Dee Okafor', '45')
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('someone else saved these weekly hours meanwhile (still 40h)')
+    expect(alert).not.toHaveTextContent('were changed')
+  })
+})
+
+describe('when a repeat is refused after an unknown outcome', () => {
+  // The first attempt IS stored, its answer lost; the repeat can't even run
+  // (no database connection). "Not saved" would be false, and nothing is
+  // being sent any more, so "Sending it again" must not stay either.
+  it('says the save could not be confirmed, and the "?" says so too', async () => {
+    const server = fakeServer(['store-and-lose-answer', 'refuse'])
+    renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    const original = vi.mocked(fetch).getMockImplementation()!
+    vi.mocked(fetch).mockImplementation(async (url, init) =>
+      // Keep the grid from reloading the stored 50 meanwhile.
+      init?.method === 'PATCH' ? original(url, init) : new Response('<html>Bad Gateway</html>', { status: 502 }),
+    )
+    await edit('Dee Okafor', '50')
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't confirm the save")
+    expect(alert).not.toHaveTextContent('Not saved')
+    expect(server.hours[4]).toBe(50)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(capButton('Dee Okafor')).toHaveTextContent('40h ?')
+    expect(capButton('Dee Okafor')).toHaveAttribute('title', expect.stringMatching(/may hold a different value/))
+    expect(capButton('Dee Okafor')).not.toHaveAttribute('title', expect.stringMatching(/Sending it again/))
   })
 })
 
@@ -286,7 +344,7 @@ describe('after giving up', () => {
     const server = fakeServer([...Array(SAVE_ATTEMPTS).fill('lose-request'), 'store', 'store'])
     renderGrid()
     await edit('Dee Okafor', '50')
-    await screen.findByText(/Couldn't confirm the save after/)
+    await screen.findByText(/Couldn't confirm the save/)
     expect(capButton('Dee Okafor')).toHaveTextContent('40h ?')
     expect(capButton('Dee Okafor')).toHaveAttribute('title', expect.stringMatching(/may hold a different value/))
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))

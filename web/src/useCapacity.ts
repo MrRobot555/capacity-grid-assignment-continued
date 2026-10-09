@@ -9,16 +9,22 @@ export const SAVE_ATTEMPTS = 5
 export const retryTiming = { delay: (attempt: number) => 1000 * 2 ** (attempt - 1) }
 
 /**
- * What a save came to:
- *  - ok: stored (or, after a lost answer, found already stored);
- *  - changed: the row changed on the server since it was loaded; nothing of
- *    ours stored. `current` is the row now (already applied to the grid);
- *  - definite: refused for certain, nothing stored;
- *  - unconfirmed: no definite answer after SAVE_ATTEMPTS tries.
+ * What a save came to. An outcome belongs to the save, not to one request:
+ * after any attempt whose outcome was unknown (or while an earlier save of the
+ * person is unknown), a later request's definite answer says only what *that
+ * request* did, so it can't settle the save. Only a 200, or a 412 showing our
+ * value, can.
+ *  - ok: stored (or found already holding our value);
+ *  - changed: the server holds another value now (`current`, already applied).
+ *    `mayHaveLanded`: an earlier attempt of ours may have been stored before
+ *    that change, so this is not a "not saved";
+ *  - error, unconfirmed false: refused for certain, and nothing earlier is
+ *    unknown, so nothing was stored;
+ *  - error, unconfirmed true: no definite answer about the save.
  */
 export type SaveResult =
   | { ok: true }
-  | { ok: false; changed: Person }
+  | { ok: false; changed: Person; mayHaveLanded: boolean }
   | { ok: false; error: unknown; unconfirmed: boolean }
 
 export function useCapacity(from: ISODate, to: ISODate) {
@@ -27,6 +33,9 @@ export function useCapacity(from: ISODate, to: ISODate) {
   // Orders loads and saves against each other: see confirmedAt in capacityState.
   const clock = useRef(0)
   const mounted = useRef(true)
+  // Read by the save loop, which outlives the render it started in.
+  const unsure = useRef(state.unsure)
+  unsure.current = state.unsure
   useEffect(() => {
     mounted.current = true
     return () => {
@@ -65,17 +74,29 @@ export function useCapacity(from: ISODate, to: ISODate) {
    */
   const saveWeeklyHours = useCallback(
     async (id: number, weeklyHours: number, version: string): Promise<SaveResult> => {
+      // The server's row is fresh, whether a save stored it (200) or the server
+      // sent it back (412): one way to apply it, ordered against loads.
+      const confirmWith = (person: Person) =>
+        dispatch({ type: 'saveConfirmed', person, confirmedAt: ++clock.current })
+      // Unknown so far: an earlier save of this person, or an attempt of this one.
+      let uncertain = unsure.current[id] !== undefined
       for (let attempt = 1; ; attempt++) {
         try {
-          const person = await updateWeeklyHours(id, weeklyHours, version)
-          dispatch({ type: 'saveConfirmed', person, confirmedAt: ++clock.current })
+          confirmWith(await updateWeeklyHours(id, weeklyHours, version))
           return { ok: true }
         } catch (error) {
           if (error instanceof ApiError && error.current) {
-            dispatch({ type: 'saveConfirmed', person: error.current, confirmedAt: ++clock.current })
-            return error.current.weeklyHours === weeklyHours ? { ok: true } : { ok: false, changed: error.current }
+            confirmWith(error.current)
+            if (error.current.weeklyHours === weeklyHours) return { ok: true }
+            return { ok: false, changed: error.current, mayHaveLanded: uncertain }
           }
-          if (isDefiniteFailure(error)) return { ok: false, error, unconfirmed: false }
+          if (isDefiniteFailure(error)) {
+            if (!uncertain) return { ok: false, error, unconfirmed: false }
+            // This request stored nothing, but an earlier attempt may have.
+            dispatch({ type: 'saveGaveUp', id })
+            return { ok: false, error, unconfirmed: true }
+          }
+          uncertain = true
           if (attempt >= SAVE_ATTEMPTS || !mounted.current) {
             dispatch({ type: 'saveGaveUp', id })
             return { ok: false, error, unconfirmed: true }

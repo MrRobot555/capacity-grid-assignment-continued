@@ -95,7 +95,11 @@ func (s *server) handleUpdatePerson(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "weeklyHours must be between 0 and 168")
 		return
 	}
-	version := strings.Trim(r.Header.Get("If-Match"), `" `)
+	version, ok := parseIfMatch(r.Header.Values("If-Match"))
+	if !ok {
+		writeError(w, http.StatusBadRequest, `If-Match must be "<version>" or *`)
+		return
+	}
 
 	// One deadline for the whole save, including waiting for a pooled
 	// connection and the COMMIT. It is longer than the database's own limit
@@ -197,4 +201,25 @@ func saveErrorResponse(err error) (int, map[string]any) {
 	default:
 		return http.StatusInternalServerError, map[string]any{"error": "could not update person"}
 	}
+}
+
+// parseIfMatch reads the version a save is conditional on. No header, or *,
+// means unconditional ("" back): * matches any existing row, as in HTTP. A
+// weak tag (W/"…") is compared like a strong one: a row has one version. An
+// empty tag is refused, so a client that lost track of a version can't
+// silently fall back to last-write-wins.
+func parseIfMatch(values []string) (string, bool) {
+	if len(values) == 0 {
+		return "", true
+	}
+	tag := strings.TrimSpace(values[0])
+	if tag == "*" {
+		return "", true
+	}
+	tag = strings.TrimPrefix(tag, "W/")
+	if len(tag) < 2 || !strings.HasPrefix(tag, `"`) || !strings.HasSuffix(tag, `"`) {
+		return "", false
+	}
+	tag = strings.TrimSpace(tag[1 : len(tag)-1])
+	return tag, tag != ""
 }

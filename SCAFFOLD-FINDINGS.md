@@ -114,7 +114,10 @@ never told.
 This repository closes that **without a schema change**, using Postgres's
 `xmin` system column as the row version (§1). A save made on a stale view
 gets 412 with the current row, and the editor says "changed on the server
-since you loaded them (now 26h)" instead of silently overwriting.
+since you loaded them (now 26h)" instead of silently overwriting. The grid
+always sends `If-Match`; a `PATCH` without it (tooling, scripts) is still an
+unconditional write by design, and an empty tag is refused rather than taken
+as "unconditional".
 **The scaffold still needs** a real `version` column. `xmin` is a 32-bit
 transaction id: fine for "has this row changed since I read it" across
 seconds or minutes, but not a durable version to store or compare over long

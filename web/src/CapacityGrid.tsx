@@ -25,7 +25,7 @@ import {
   type ISODate,
   type WeekRange,
 } from './dates'
-import { SAVE_ATTEMPTS, useCapacity } from './useCapacity'
+import { useCapacity } from './useCapacity'
 
 type Props = {
   /** Monday of the first week. */
@@ -139,6 +139,7 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
     }
     setEditing({ ...editing, saving: true, error: null })
     let message: string
+    const loaded = people[id].weeklyHours
     try {
       const result = await saveWeeklyHours(id, hours, people[id].version)
       if (result.ok) {
@@ -149,9 +150,9 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
       }
       message =
         'changed' in result
-          ? `Not saved: the weekly hours were changed on the server since you loaded them (now ${formatHours(result.changed.weeklyHours) + 'h'}). Your value is kept here; save again to replace it.`
+          ? changedMessage(result.changed.weeklyHours, loaded, result.mayHaveLanded)
           : result.unconfirmed
-            ? `Couldn't confirm the save after ${SAVE_ATTEMPTS} tries, so the server may or may not hold it. Saving again is safe. (${errorText(result.error)})`
+            ? `Couldn't confirm the save, so the server may or may not hold it. Saving again is safe. (${errorText(result.error)})`
             : `Not saved. ${errorText(result.error)}`
     } catch (err) {
       // Anything unexpected must still end the save, or the editor would stay
@@ -507,6 +508,21 @@ function useSlow(key: number | null) {
     return () => clearTimeout(timer)
   }, [key])
   return key !== null && slowKey === key
+}
+
+/** What to say when the server holds another value than the one we sent. */
+function changedMessage(now: number, loaded: number, mayHaveLanded: boolean): string {
+  const nowText = `${formatHours(now)}h`
+  // An earlier attempt of ours may have been stored and then changed by
+  // someone else: "not saved" could be false.
+  if (mayHaveLanded) {
+    return `Someone else changed the weekly hours on the server (now ${nowText}); your earlier attempt may have been stored before that. Your value is kept here; save again to replace theirs.`
+  }
+  // The row was saved again elsewhere without changing the value.
+  if (now === loaded) {
+    return `Not saved: someone else saved these weekly hours meanwhile (still ${nowText}). Your value is kept here; save again to apply it.`
+  }
+  return `Not saved: the weekly hours were changed on the server since you loaded them (now ${nowText}). Your value is kept here; save again to replace it.`
 }
 
 function errorText(err: unknown): string {

@@ -151,3 +151,11 @@ left unfinished. Append as you go; a line or two per entry is right.
 - A lost answer is settled by repeating the identical request: 200 if the first attempt never landed, 412 with our value if it did, 412 with someone else's value if they changed it, and then nothing of ours overwrites it.
 - Deleted: the Save-Id registry, replay rules and the `settled` state. As a by-product, two managers can no longer silently overwrite each other; the editor says "changed on the server since you loaded them (now Xh)" and keeps the typed value.
 - Gate hygiene: two of my Go gates type-asserted the 412 body unchecked, so a mutant made the test binary panic and the remaining tests never ran. They now fail with a message.
+
+## Review round 7 → an outcome belongs to the save, not to a request
+
+- The `xmin` row version held up under every attack: locks, VACUUM FREEZE/FULL, concurrent uncommitted updates, late copies.
+- Both reviewers independently found the client's interpretation wrong. After an attempt whose outcome was unknown, a definite answer to the *repeat* only says what that request did. Yet the client said "Not saved" (the DB held 50), or treated a 412 showing another manager's later value as proof that ours never landed.
+- Fixed structurally rather than per branch. The save loop carries `uncertain`, which starts from the person's existing doubt and is set by any unknown attempt. While uncertain, only a 200 or a 412 showing our value settles the save. Removing auto-retry was considered and rejected: a manual re-save has the same flaw.
+- The 200 and 412 paths now share one confirm helper, which closes the auditor's S4 gap (their ordering against loads diverging) by construction.
+- Also: a "saved again elsewhere" message when only the version moved; `If-Match` parsed as in HTTP, with an empty tag refused; doc qualifier: the no-overwrite guarantee holds for the grid, and a PATCH without If-Match is unconditional by design.
