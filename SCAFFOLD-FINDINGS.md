@@ -113,8 +113,10 @@ managers edit the same person, the last write wins and the first manager is
 never told.
 This repository closes that **without a schema change**, using Postgres's
 `xmin` system column as the row version (§1). A save made on a stale view
-gets 412 with the current row, and the editor says "changed on the server
-since you loaded them (now 26h)" instead of silently overwriting. The grid
+gets 412 with the current row, and the editor says "Not saved: the weekly
+hours on the server were changed since you loaded them (now 26h)" instead of
+silently overwriting (`TestConcurrentSaveOnTheSameVersionLosesNothing` shows the
+check and the write are one atomic step). The grid
 always sends `If-Match`; a `PATCH` without it (tooling, scripts) is still an
 unconditional write by design, and an empty tag is refused rather than taken
 as "unconditional".

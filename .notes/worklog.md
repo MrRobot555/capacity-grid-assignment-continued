@@ -167,3 +167,10 @@ left unfinished. Append as you go; a line or two per entry is right.
 - Messages state what the server holds and, when it's known, whose save it was ("your earlier save of 24h went through after all"). They never say "someone else".
 - The auditor found the API's returned versions were never checked against the real `xmin`. A wrong 412 version would make every re-save fail forever, with all suites green. Now asserted, together with the cause: a re-save on the 412's version lands, in Go and end to end.
 - A sweep for tests that write person 3 without restoring it found four (the R1-X1 lesson, applied systematically rather than to the lines that were reported).
+
+## Review round 9 → removal again; paused here
+
+- The capacity numbers were independently confirmed again: 28,000 person-weeks against a day-by-day check.
+- Both reviewers found the same Medium. A load during the retries showed the row at a new version (so the save could no longer land) and correctly cleared the "?". But the still-running loop wrote the old doubt back and ended in "may or may not hold it", which the grid itself could disprove. Fixed by removal, no new mechanism: the reducer ignores a doubt about a version the row has moved past, and the loop stops once that happens.
+- The auditor's High: nothing proved the If-Match check and the write are one atomic step; a read-then-write version passed every test. A real concurrency test now holds an uncommitted UPDATE, lets our save wait behind it, commits theirs, and expects 412 with their value standing. The read-then-write mutant fails it.
+- Paused here at the owner's request. Next steps: `.notes/next-steps.md`.

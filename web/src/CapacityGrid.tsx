@@ -155,7 +155,7 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
             ? `Couldn't confirm the save of ${formatHours(hours)}h, so the server may or may not hold it. Saving again is safe. (${errorText(result.error)})`
             : `Not saved. ${errorText(result.error)}` +
               (result.earlier !== undefined
-                ? ` Your earlier save of ${formatHours(result.earlier)}h is still unconfirmed.`
+                ? ` Your earlier save of ${result.earlier.map((h) => `${formatHours(h)}h`).join(' or ')} is still unconfirmed.`
                 : '')
     } catch (err) {
       // Anything unexpected must still end the save, or the editor would stay
@@ -519,9 +519,9 @@ function useSlow(key: number | null) {
  * was; it never claims "someone else" did it, because an earlier save of ours
  * may have.
  */
-function changedMessage(f: { now: number; loaded: number; uncertain: boolean; earlier?: number }): string {
+function changedMessage(f: { now: number; loaded: number; uncertain: boolean; earlier?: number[] }): string {
   const now = `${formatHours(f.now)}h`
-  if (f.earlier !== undefined && f.now === f.earlier && !f.uncertain) {
+  if (f.earlier?.includes(f.now) && !f.uncertain) {
     return `Not saved: your earlier save of ${now} went through after all, so the weekly hours are ${now} now. Your value is kept here; save again to apply it.`
   }
   const what = f.now === f.loaded ? `saved again since you loaded them (still ${now})` : `changed since you loaded them (now ${now})`

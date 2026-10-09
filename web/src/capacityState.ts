@@ -81,13 +81,14 @@ export type Loaded = {
 }
 
 /**
- * Doubt about one person's capacity: a save of `value`, sent on `version`
- * (If-Match), whose outcome we don't know. Under If-Match that save can only
- * ever land while the row is still at `version`. So the doubt ends as soon as
- * the row is seen at any other version (a load, a 412, a confirmed save): that
- * save can no longer land, and what is shown is the truth.
+ * Doubt about one person's capacity: saves sent on `version` (If-Match) whose
+ * outcome we don't know, with the `values` they tried. Under If-Match at most
+ * one of them can land, and only while the row is still at `version`. So the
+ * doubt ends as soon as the row is seen at any other version (a load, a 412,
+ * a confirmed save): no such save can land any more, and what is shown is the
+ * truth. A doubt about a version already known to be past is never recorded.
  */
-type Unsure = { state: 'retrying' | 'unknown'; version: string; value: number }
+type Unsure = { state: 'retrying' | 'unknown'; version: string; values: number[] }
 
 export type State = {
   /** The range the grid is asking for. */
@@ -188,7 +189,15 @@ export function capacityReducer(state: State, action: Action): State {
     case 'saveRetrying':
     case 'saveGaveUp': {
       const { id, version, value } = action
-      const doubt: Unsure = { state: action.type === 'saveRetrying' ? 'retrying' : 'unknown', version, value }
+      // The row has been seen at another version: this save can no longer land.
+      const known = state.people[id]?.version
+      if (known !== undefined && known !== version) return state
+      const before = state.unsure[id]?.version === version ? state.unsure[id].values : []
+      const doubt: Unsure = {
+        state: action.type === 'saveRetrying' ? 'retrying' : 'unknown',
+        version,
+        values: before.includes(value) ? before : [...before, value],
+      }
       return { ...state, unsure: { ...state.unsure, [id]: doubt } }
     }
   }

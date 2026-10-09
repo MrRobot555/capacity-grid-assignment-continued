@@ -14,17 +14,18 @@ export const retryTiming = { delay: (attempt: number) => 1000 * 2 ** (attempt - 
  * only what *that request* did, so it can't settle the save. Only a 200, or a
  * 412 showing our value, can.
  *  - ok: stored (or found already holding our value);
- *  - changed: the server holds another value now (`changed`, already applied).
+ *  - changed: the server holds another value now (`changed`, already applied),
+ *    known from a 412 or from a load that showed the row at a new version.
  *    `uncertain`: an attempt of this save may have been stored before that.
- *    `earlier`: the value of an earlier, still-doubtful save of this person on
- *    the same version, which may be what the server now holds;
+ *    `earlier`: values of earlier, still-doubtful saves of this person on the
+ *    same version, one of which may be what the server now holds;
  *  - error, unconfirmed false: this save was refused for certain;
  *  - error, unconfirmed true: no definite answer about this save.
  */
 export type SaveResult =
   | { ok: true }
-  | { ok: false; changed: Person; uncertain: boolean; earlier?: number }
-  | { ok: false; error: unknown; unconfirmed: boolean; earlier?: number }
+  | { ok: false; changed: Person; uncertain: boolean; earlier?: number[] }
+  | { ok: false; error: unknown; unconfirmed: boolean; earlier?: number[] }
 
 export function useCapacity(from: ISODate, to: ISODate) {
   const [state, dispatch] = useReducer(capacityReducer, initialState)
@@ -35,6 +36,8 @@ export function useCapacity(from: ISODate, to: ISODate) {
   // Read by the save loop, which outlives the render it started in.
   const unsure = useRef(state.unsure)
   unsure.current = state.unsure
+  const people = useRef(state.people)
+  people.current = state.people
   useEffect(() => {
     mounted.current = true
     return () => {
@@ -61,15 +64,15 @@ export function useCapacity(from: ISODate, to: ISODate) {
   const retry = useCallback(() => setAttempt((n) => n + 1), [])
 
   /**
-   * Stores a person's weekly hours. The grid changes only on a definite answer.
-   *
-   * The save carries the version the grid loaded (If-Match). When an attempt
-   * gets no definite answer, the identical request is sent again, up to
-   * SAVE_ATTEMPTS times, with "?" shown meanwhile. A repeat either applies
-   * (the earlier attempt never landed) or meets a newer version: then the
-   * server sends the current row, which is applied as it is fresh. If it holds
-   * the value we sent, our earlier attempt landed; if not, the row was changed
-   * by someone else and nothing of ours was stored.
+   * Stores a person's weekly hours, conditional on the version the grid loaded
+   * (If-Match). When an attempt gets no definite answer, the identical request
+   * is sent again, up to SAVE_ATTEMPTS times, with "?" shown meanwhile. A
+   * repeat either applies (no earlier attempt landed) or meets a newer version
+   * and gets the current row back (412), which is applied as it is fresh. If
+   * that row holds our value, the save landed; if not, all we know is what the
+   * server holds now, and that an attempt of ours may have landed before it.
+   * Once the row has been seen at another version (a load meanwhile), the save
+   * can no longer land, so retrying stops.
    */
   const saveWeeklyHours = useCallback(
     async (id: number, weeklyHours: number, version: string): Promise<SaveResult> => {
@@ -80,7 +83,7 @@ export function useCapacity(from: ISODate, to: ISODate) {
       // An earlier save of this person, on this same version, whose outcome is
       // unknown: it may be what the server holds by the time we get there.
       const doubt = unsure.current[id]
-      const earlier = doubt?.version === version ? doubt.value : undefined
+      const earlier = doubt?.version === version ? doubt.values : undefined
       // Whether an attempt of *this* save has had an unknown outcome.
       let uncertain = false
       for (let attempt = 1; ; attempt++) {
@@ -100,6 +103,10 @@ export function useCapacity(from: ISODate, to: ISODate) {
             return { ok: false, error, unconfirmed: true }
           }
           uncertain = true
+          // A load showed the row at another version: this save can no longer
+          // land, and the grid already shows what the server holds.
+          const now = people.current[id]
+          if (now && now.version !== version) return { ok: false, changed: { id, ...now }, uncertain, earlier }
           if (attempt >= SAVE_ATTEMPTS || !mounted.current) {
             dispatch({ type: 'saveGaveUp', id, version, value: weeklyHours })
             return { ok: false, error, unconfirmed: true }

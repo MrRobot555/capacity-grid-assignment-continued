@@ -778,3 +778,43 @@ func TestUnknownPersonIsNotFoundWithIfMatch(t *testing.T) {
 		t.Errorf("stored %v, want the seeded 20", h)
 	}
 }
+
+// The version check and the write must be one atomic step. Here a second
+// manager's UPDATE holds the row (not yet committed); our save, on the version
+// both read, waits behind it. When theirs commits, ours must get 412 and their
+// value must stand. A read-then-write check would see the old version, then
+// overwrite theirs.
+func TestConcurrentSaveOnTheSameVersionLosesNothing(t *testing.T) {
+	s := testServer(t)
+	ctx := context.Background()
+	t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
+	v := versionOf(t, s, 3)
+
+	other, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Rollback(ctx)
+	if _, err := other.Exec(ctx, `UPDATE people SET weekly_hours = 28 WHERE id = 3`); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- patchIfMatch(t, s, "3", v, `{"weeklyHours": 26}`) }()
+	time.Sleep(300 * time.Millisecond) // ours is now waiting for their row lock
+	if err := other.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case rec := <-done:
+		if rec.Code != http.StatusPreconditionFailed {
+			t.Errorf("status %d %s, want 412: the row changed while we waited", rec.Code, rec.Body)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("our save never finished")
+	}
+	if h := storedHours(t, s, 3); h != 28 {
+		t.Errorf("stored %v, want the other manager's 28: an update was lost", h)
+	}
+}

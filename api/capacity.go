@@ -106,6 +106,12 @@ func (s *server) handleCapacity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Count before building: a range like 0001..9999 would otherwise build half
+	// a million weeks just to be refused.
+	if int(mondayOf(to).Sub(mondayOf(from)).Hours()/(24*7))+1 > maxWeeks {
+		writeError(w, http.StatusBadRequest, "range is too long: at most 106 weeks per request")
+		return
+	}
 	weeks := weekStarts(from, to)
 	if len(weeks) > maxWeeks {
 		writeError(w, http.StatusBadRequest, "range is too long: at most 106 weeks per request")

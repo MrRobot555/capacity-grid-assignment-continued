@@ -199,6 +199,23 @@ describe('capacityReducer', () => {
     expect(state.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 30, version: 'v7' })
   })
 
+  it('never records a doubt about a version the row has already moved past', () => {
+    const loaded = run(
+      { type: 'fetchStarted', key: 'A', issuedAt: 1 },
+      { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) }, // Dee at v1
+    )
+    const late = capacityReducer(loaded, { type: 'saveGaveUp', id: 4, version: 'v0', value: 50 })
+    expect(certaintyOf(late, 4)).toBe('certain')
+  })
+
+  it('keeps every doubtful value on the same version: only one of them can land', () => {
+    const state = run(
+      { type: 'saveGaveUp', id: 4, version: 'v1', value: 24 },
+      { type: 'saveGaveUp', id: 4, version: 'v1', value: 20 },
+    )
+    expect(state.unsure[4]).toEqual({ state: 'unknown', version: 'v1', values: [24, 20] })
+  })
+
   it("keeps each person's doubt to themselves", () => {
     const state = run(
       { type: 'saveRetrying', id: 4, version: 'v1', value: 50 },
@@ -210,7 +227,7 @@ describe('capacityReducer', () => {
     expect(certaintyOf(state, 1)).toBe('certain')
   })
 
-  it('clears "unknown" only with a confirmed save of that person', () => {
+  it('clears "unknown" with a confirmed save of that person (or a load at another version)', () => {
     const gaveUp = run({ type: 'saveGaveUp', id: 4, version: 'v1', value: 50 })
     expect(certaintyOf(gaveUp, 4)).toBe('unknown')
     const saved = capacityReducer(gaveUp, {

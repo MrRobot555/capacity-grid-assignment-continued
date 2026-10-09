@@ -335,7 +335,7 @@ describe('while a save is being sent again', () => {
 })
 
 describe('after giving up', () => {
-  it('keeps "?" until a save of that person is confirmed, and a repeat of the old value reaches the server', async () => {
+  it('keeps "?" while the row stays at that version, and a repeat of the old value reaches the server', async () => {
     const server = fakeServer([...Array(SAVE_ATTEMPTS).fill('lose-request'), 'store', 'store'])
     renderGrid()
     await edit('Dee Okafor', '50')
@@ -566,7 +566,8 @@ describe('what the grid draws', () => {
   })
 
   it('says so when nobody matches, or nobody is over', async () => {
-    fakeServer([])
+    const server = fakeServer([])
+    server.changeElsewhere(4, 50) // Dee's 45 is then under: nobody is over
     renderGrid()
     await screen.findByText('Ana Ferreira', { selector: 'th' })
     fireEvent.change(screen.getByLabelText('Find person'), { target: { value: 'zz' } })
@@ -574,5 +575,40 @@ describe('what the grid draws', () => {
     fireEvent.change(screen.getByLabelText('Find person'), { target: { value: 'ana' } })
     fireEvent.click(screen.getByLabelText('Only over capacity'))
     expect(screen.getByText('Nobody matching “ana” is over capacity in these weeks.')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Find person'), { target: { value: '' } })
+    expect(screen.getByText('Nobody is over capacity in these weeks.')).toBeInTheDocument()
+  })
+
+  it('fills the bar completely for hours against no capacity at all', async () => {
+    const server = fakeServer([])
+    server.changeElsewhere(1, 0) // Ana: 30 allocated, 0 capacity
+    renderGrid()
+    await screen.findByText('Ana Ferreira', { selector: 'th' })
+    const anaCell = within(rowOf('Ana Ferreira')).getAllByRole('cell')[2]
+    expect(anaCell.style.getPropertyValue('--fill')).toBe('1')
+    expect(anaCell).toHaveClass('over')
+  })
+})
+
+// Round 9: a load during the retries showed the row at a new version. Under
+// If-Match the save can no longer land, so the doubt must not come back, the
+// retries must stop, and nothing may say "may or may not hold it".
+describe('when a load shows the row at a new version during the retries', () => {
+  it('stops retrying, keeps no "?", and says what the server holds', async () => {
+    retryTiming.delay = () => 300
+    const server = fakeServer(Array(SAVE_ATTEMPTS).fill('lose-request'))
+    const { rerender } = renderGrid()
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(server.patches()).toHaveLength(1))
+    server.changeElsewhere(4, 30)
+    rerender(<CapacityGrid from="2026-01-12" to="2026-01-25" onRangeChange={() => {}} />)
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^30h$/))
+
+    const alert = await screen.findByRole('alert', {}, { timeout: 2000 })
+    expect(alert).toHaveTextContent('changed since you loaded them (now 30h)')
+    expect(alert).toHaveTextContent('your attempt may have been stored before that')
+    expect(alert).not.toHaveTextContent('may or may not hold it')
+    expect(capButton('Dee Okafor')).toHaveTextContent(/^30h$/)
+    expect(server.patches()).toHaveLength(2) // stopped: no attempts after the one that met the new version
   })
 })
