@@ -28,7 +28,13 @@ async function geometry(page: Page) {
     const head = el.querySelector('thead th')!.getBoundingClientRect()
     const rows = [...el.querySelectorAll('tbody tr:not(.spacer)')].map((tr) => {
       const r = tr.getBoundingClientRect()
-      return { name: tr.querySelector('th.name')!.textContent!.trim(), top: r.top, bottom: r.bottom, height: r.height }
+      return {
+        name: tr.querySelector('th.name')!.textContent!.trim(),
+        rowIndex: Number(tr.getAttribute('aria-rowindex')),
+        top: r.top,
+        bottom: r.bottom,
+        height: r.height,
+      }
     })
     return {
       scrollTop: el.scrollTop,
@@ -94,6 +100,10 @@ test(`virtualised rows (${fontSize} font): the right person at the bottom and mi
   // And the rendered rows are consecutive people in collation order.
   const firstIdx = names.indexOf(mid.rows[0].name)
   expect(mid.rows.map((r) => r.name)).toEqual(names.slice(firstIdx, firstIdx + mid.rows.length))
+  // A screen reader hears each row's place among all of them, not in the window
+  // (row 1 is the header).
+  expect(mid.rows.map((r) => r.rowIndex)).toEqual(mid.rows.map((_, i) => firstIdx + i + 2))
+  await expect(page.locator('.scroller table')).toHaveAttribute('aria-rowcount', String(names.length + 1))
 })
 }
 

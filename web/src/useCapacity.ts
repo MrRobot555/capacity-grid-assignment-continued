@@ -25,7 +25,7 @@ export const retryTiming = { delay: (attempt: number) => 1000 * 2 ** (attempt - 
 export type SaveResult =
   | { ok: true }
   | { ok: false; changed: Person; uncertain: boolean; earlier?: number[] }
-  | { ok: false; error: unknown; unconfirmed: boolean; earlier?: number[] }
+  | { ok: false; error: unknown; unconfirmed: boolean }
 
 export function useCapacity(from: ISODate, to: ISODate) {
   const [state, dispatch] = useReducer(capacityReducer, initialState)
@@ -78,9 +78,15 @@ export function useCapacity(from: ISODate, to: ISODate) {
   const saveWeeklyHours = useCallback(
     async (id: number, weeklyHours: number, version: string): Promise<SaveResult> => {
       // The server's row is fresh, whether a save stored it (200) or the server
-      // sent it back (412): one way to apply it, ordered against loads.
-      const confirmWith = (person: Person) =>
+      // sent it back (412): one way to apply it, ordered against loads. If a
+      // load meanwhile showed the row at a third version (neither the one we
+      // sent nor this one), which of the two is newer can't be told, so the
+      // range is loaded again to settle it.
+      const confirmWith = (person: Person) => {
+        const seen = people.current[id]?.version
         dispatch({ type: 'saveConfirmed', person, confirmedAt: ++clock.current })
+        if (seen !== undefined && seen !== version && seen !== person.version) retry()
+      }
       // An earlier save of this person, on this same version, whose outcome is
       // unknown: it may be what the server holds by the time we get there.
       const doubt = unsure.current[id]
@@ -90,6 +96,10 @@ export function useCapacity(from: ISODate, to: ISODate) {
       // The one reading of a row seen at another version, however it was seen.
       const settledBy = (row: Person): SaveResult =>
         row.weeklyHours === weeklyHours ? { ok: true } : { ok: false, changed: row, uncertain, earlier }
+      // The row is already known to be past the version the draft started
+      // from: no attempt could land, so none is sent.
+      const known = people.current[id]
+      if (known && known.version !== version) return settledBy({ id, ...known })
       for (let attempt = 1; ; attempt++) {
         try {
           confirmWith(await updateWeeklyHours(id, weeklyHours, version))
@@ -100,7 +110,7 @@ export function useCapacity(from: ISODate, to: ISODate) {
             return settledBy(error.current)
           }
           const definite = isDefiniteFailure(error)
-          if (definite && !uncertain) return { ok: false, error, unconfirmed: false, earlier }
+          if (definite && !uncertain) return { ok: false, error, unconfirmed: false }
           // From here an attempt of this save may have landed.
           uncertain = true
           const now = people.current[id]
@@ -114,7 +124,7 @@ export function useCapacity(from: ISODate, to: ISODate) {
         }
       }
     },
-    [],
+    [retry],
   )
 
   return { state, retry, saveWeeklyHours }

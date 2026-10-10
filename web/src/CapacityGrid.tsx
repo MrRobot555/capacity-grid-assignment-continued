@@ -58,10 +58,21 @@ type Editing = {
   base: Person
   draft: string
   saving: boolean
-  error: string | null
-  /** The last attempt failed, so the action is a retry. */
-  failed: boolean
+  /** Why the draft can't be saved as typed. */
+  invalid: string | null
+  /**
+   * What the last save came to, kept as data: its message is worked out from
+   * the row as it is now, so a load that settles the question afterwards
+   * can't leave the editor saying something the grid disproves.
+   */
+  failure: Failure | null
 }
+
+type Failure =
+  | { kind: 'refused'; error: unknown }
+  | { kind: 'unconfirmed'; hours: number; version: string; loadedFrom: number; error: unknown }
+  | { kind: 'changed'; loaded: number; uncertain: boolean; earlier?: number[] }
+  | { kind: 'unexpected'; error: unknown }
 
 // CapacityGrid renders one row per person and one column per week, showing
 // how allocated each person is and making over-allocation obvious.
@@ -122,7 +133,7 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
 
   function openEditor(id: number) {
     const base = { id, ...people[id] }
-    setEditing({ id, base, draft: String(base.weeklyHours), saving: false, error: null, failed: false })
+    setEditing({ id, base, draft: String(base.weeklyHours), saving: false, invalid: null, failure: null })
   }
 
   function closeEditor() {
@@ -136,7 +147,7 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
     const { id } = editing
     const hours = parseWeeklyHours(editing.draft)
     if (typeof hours === 'string') {
-      setEditing({ ...editing, error: hours, failed: false })
+      setEditing({ ...editing, invalid: hours, failure: null })
       return
     }
     // Nothing to save, unless an earlier save's outcome is unknown: then the
@@ -145,8 +156,8 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
       closeEditor()
       return
     }
-    setEditing({ ...editing, saving: true, error: null })
-    let message: string
+    setEditing({ ...editing, saving: true, invalid: null, failure: null })
+    let failure: Failure
     let base = editing.base
     try {
       const result = await saveWeeklyHours(id, hours, base.version)
@@ -159,21 +170,18 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
       // The manager is now told what the server holds, so saving again is a
       // deliberate choice made on that row.
       if ('changed' in result) base = result.changed
-      message =
+      failure =
         'changed' in result
-          ? changedMessage({ now: result.changed.weeklyHours, loaded: editing.base.weeklyHours, ...result })
+          ? { kind: 'changed', loaded: editing.base.weeklyHours, uncertain: result.uncertain, earlier: result.earlier }
           : result.unconfirmed
-            ? `Couldn't confirm the save of ${formatHours(hours)}h, so the server may or may not hold it. Saving again is safe. (${errorText(result.error)})`
-            : `Not saved. ${errorText(result.error)}` +
-              (result.earlier !== undefined
-                ? ` Your earlier save of ${result.earlier.map((h) => `${formatHours(h)}h`).join(' or ')} is still unconfirmed.`
-                : '')
+            ? { kind: 'unconfirmed', hours, version: base.version, loadedFrom: base.weeklyHours, error: result.error }
+            : { kind: 'refused', error: result.error }
     } catch (err) {
       // Anything unexpected must still end the save, or the editor would stay
       // at "Saving…" with every button locked.
-      message = `Something went wrong while saving: ${errorText(err)}. Saving again is safe.`
+      failure = { kind: 'unexpected', error: err }
     }
-    setEditing((cur) => (cur?.id === id ? { ...cur, base, saving: false, error: message, failed: true } : cur))
+    setEditing((cur) => (cur?.id === id ? { ...cur, base, saving: false, failure } : cur))
   }
 
   return (
@@ -254,7 +262,12 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
           name={editingPerson.name}
           capacity={capacityView(editingPerson.weeklyHours, certainty(editing.id))}
           editing={editing}
-          onChange={(draft) => setEditing({ ...editing, draft, error: null, failed: false })}
+          outcome={
+            editing.invalid !== null
+              ? { text: editing.invalid, retry: false }
+              : editing.failure && failureMessage(editing.failure, editingPerson, state.unsure[editing.id])
+          }
+          onChange={(draft) => setEditing({ ...editing, draft, invalid: null, failure: null })}
           onSubmit={submit}
           onCancel={closeEditor}
         />
@@ -393,11 +406,14 @@ function CapacityEditor(props: {
   name: string
   capacity: CapacityView
   editing: Editing
+  /** What the hint says instead of the usual text, and whether Save is a retry. */
+  outcome: { text: string; retry: boolean } | null
   onChange: (draft: string) => void
   onSubmit: () => void
   onCancel: () => void
 }) {
-  const { name, capacity, editing, onChange, onSubmit, onCancel } = props
+  const { name, capacity, editing, outcome, onChange, onSubmit, onCancel } = props
+  const error = outcome?.text ?? null
   const hintId = `cap-hint-${editing.id}`
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -430,7 +446,7 @@ function CapacityEditor(props: {
       <input
         aria-label={`Weekly hours for ${name}`}
         aria-describedby={hintId}
-        aria-invalid={editing.error !== null}
+        aria-invalid={error !== null}
         type="number"
         inputMode="decimal"
         min={0}
@@ -444,13 +460,13 @@ function CapacityEditor(props: {
       {/* aria-disabled, not disabled: a disabled button drops focus to the page,
           and then Escape no longer reaches the form after a failure. */}
       <button type="submit" aria-disabled={editing.saving}>
-        {editing.saving ? 'Saving…' : editing.failed ? 'Retry' : 'Save'}
+        {editing.saving ? 'Saving…' : outcome?.retry ? 'Retry' : 'Save'}
       </button>
       <button type="button" onClick={onCancel} disabled={editing.saving}>
         Cancel
       </button>
-      <p id={hintId} className={editing.error ? 'hint error' : 'hint'} role={editing.error ? 'alert' : undefined}>
-        {editing.error ?? 'Changes capacity for every week, past and future.'}
+      <p id={hintId} className={error ? 'hint error' : 'hint'} role={error ? 'alert' : undefined}>
+        {error ?? 'Changes capacity for every week, past and future.'}
       </p>
       {capacity.note && <p className="hint">{capacity.note}</p>}
     </form>
@@ -522,6 +538,43 @@ function useSlow(key: number | null) {
     return () => clearTimeout(timer)
   }, [key])
   return key !== null && slowKey === key
+}
+
+/**
+ * What the editor says about the last save, from the row as it is now.
+ * A doubtful save (unconfirmed) is settled once the row is seen at another
+ * version: under If-Match it can no longer land, and the row says what the
+ * server holds. Every other outcome names the server's current value.
+ */
+function failureMessage(
+  f: Failure,
+  row: { weeklyHours: number; version: string },
+  doubt: { values: number[] } | undefined,
+): { text: string; retry: boolean } {
+  switch (f.kind) {
+    case 'refused':
+      return {
+        text:
+          `Not saved. ${errorText(f.error)}` +
+          (doubt ? ` Your earlier save of ${doubt.values.map((h) => `${formatHours(h)}h`).join(' or ')} is still unconfirmed.` : ''),
+        retry: true,
+      }
+    case 'unconfirmed':
+      if (row.version === f.version) {
+        return {
+          text: `Couldn't confirm the save of ${formatHours(f.hours)}h, so the server may or may not hold it. Saving again is safe. (${errorText(f.error)})`,
+          retry: true,
+        }
+      }
+      if (row.weeklyHours === f.hours) {
+        return { text: `Your save of ${formatHours(f.hours)}h went through: the server holds it now.`, retry: false }
+      }
+      return { text: changedMessage({ now: row.weeklyHours, loaded: f.loadedFrom, uncertain: true }), retry: true }
+    case 'changed':
+      return { text: changedMessage({ now: row.weeklyHours, ...f }), retry: true }
+    case 'unexpected':
+      return { text: `Something went wrong while saving: ${errorText(f.error)}. Saving again is safe.`, retry: true }
+  }
 }
 
 /**

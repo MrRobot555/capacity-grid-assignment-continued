@@ -1,6 +1,14 @@
 import { useEffect, useState } from 'react'
 import { CapacityGrid } from './CapacityGrid'
-import { isInSupportedWeek, limitWeeks, todayISO, weekRange, weeksFrom, type WeekRange } from './dates'
+import {
+  isInSupportedWeek,
+  limitWeeks,
+  todayISO,
+  weekRange,
+  weeksFrom,
+  withinSupportedYears,
+  type WeekRange,
+} from './dates'
 
 const DEFAULT_WEEKS = 8
 
@@ -30,12 +38,7 @@ export function App() {
       <CapacityGrid
         from={range.from}
         to={range.to}
-        // A range leaving the supported years couldn't be loaded back from the
-        // URL, so navigation stops at their edges.
-        onRangeChange={(next) => {
-          const limited = limitWeeks(next)
-          if (isInSupportedWeek(limited.from) && isInSupportedWeek(limited.to)) setRange(limited)
-        }}
+        onRangeChange={(next) => setRange(withinSupportedYears(limitWeeks(next)))}
       />
     </main>
   )

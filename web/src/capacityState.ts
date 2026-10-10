@@ -146,7 +146,9 @@ export function capacityReducer(state: State, action: Action): State {
       const people = { ...state.people }
       for (const p of action.response.people) {
         // A load that was sent before a save was confirmed can carry the old
-        // weekly hours. The confirmed save is newer, so it wins.
+        // weekly hours. The confirmed save is newer, so it wins. (When a load
+        // shows a third version before a save's answer arrives, the order
+        // can't be told; the save loop then loads again: see confirmWith.)
         const confirmed = state.confirmedAt[p.id]
         const keepLocal = confirmed !== undefined && confirmed > action.issuedAt && p.id in people
         people[p.id] = keepLocal ? people[p.id] : { name: p.name, weeklyHours: p.weeklyHours, version: p.version }

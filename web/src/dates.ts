@@ -110,3 +110,17 @@ export function limitWeeks(range: WeekRange, max = MAX_WEEKS): WeekRange {
 export function shiftWeeks(range: WeekRange, weeks: number): WeekRange {
   return { from: addDays(range.from, weeks * 7), to: addDays(range.to, weeks * 7) }
 }
+
+/**
+ * A range moved back inside the weeks of the supported years, keeping its
+ * length: Previous or Next at an edge then stays put, and a longer range near
+ * an edge ends (or starts) at it. A range outside them couldn't be loaded back
+ * from the URL. Expects a whole-week range, as weekRange gives.
+ */
+export function withinSupportedYears(range: WeekRange): WeekRange {
+  const first = mondayOf(MIN_DATE)
+  const last = addDays(mondayOf(MAX_DATE), 6)
+  if (range.from < first) return shiftWeeks(range, weekCount(range.from, first) - 1)
+  if (range.to > last) return shiftWeeks(range, 1 - weekCount(last, range.to))
+  return range
+}

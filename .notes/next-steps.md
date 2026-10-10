@@ -1,7 +1,7 @@
 # Next steps: resuming the review cycle
 
-Last completed: **review round 10** (all of its findings fixed, committed and
-pushed). Next: **round 11**.
+Last completed: **review round 11** (all of its findings fixed, committed and
+pushed). Next: **round 12**.
 
 ## Where things are
 
@@ -13,7 +13,7 @@ pushed). Next: **round 11**.
 | Register | `.notes/review-register.md`: every finding with a verdict, plus the Recurrence table. |
 | Narrative | `.notes/worklog.md` (append only), `CONTINUED.md`, `SCAFFOLD-FINDINGS.md`. |
 
-Findings per round: 23 → 18 → 14 → 9 → 23 → 13 → 6 → 14 → 9 → 16. Round 5's rise
+Findings per round: 23 → 18 → 14 → 9 → 23 → 13 → 6 → 14 → 9 → 16 → 9. Round 5's rise
 taught the counting rule below; since then the design has been simplified, not
 grown.
 
@@ -27,7 +27,8 @@ grown.
 4. **The 3-recurrence rule:** count recurrences per *area* across the whole register, **never resetting after a redesign**. Since round 10 (owner, 2026-10-10) the count is a signal, not an order: at three, choose a redesign or a patch on the merits, whichever converges without leaving a defect, and record the choice and why. If redesigns keep recurring, the next one must **remove** mechanisms, not add them. (The owner's corrections are in the register's Recurrence section.)
 5. **Every fix gets a gate, and every gate is checked:** it must fail on the pre-fix code, or kill the mutant it targets. Then run the half-migration grep: did the removed concept actually go away, or just move?
 6. **After every round:** all suites green, the seed intact, then **commit and push** to the continuation repo.
-7. A cycle closes only when a round returns **zero** findings. Reviewers are told not to invent findings to avoid saying "converged".
+7. **Then the convergence report to the owner, before the next reviewers start** (owner, 2026-10-10): a table per round (findings, High/Medium/Low from the register, what changed) and what it means: converged or not, what is improving, what keeps recurring.
+8. A cycle closes only when a round returns **zero** findings. Reviewers are told not to invent findings to avoid saying "converged".
 
 ## Hard-won rules for running it
 

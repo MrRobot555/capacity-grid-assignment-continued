@@ -13,6 +13,7 @@ import {
   weekCount,
   weekRange,
   weeksFrom,
+  withinSupportedYears,
 } from './dates'
 
 // Date bugs hide in the viewer's time zone, so run the sensitive cases in zones
@@ -117,6 +118,15 @@ describe('dates a person can type', () => {
     expect(isInSupportedWeek('1999-12-26')).toBe(false)
     expect(isInSupportedWeek('2100-01-04')).toBe(false)
     expect(isInSupportedWeek('0202-01-05')).toBe(false)
+  })
+
+  it('moves a range back inside the supported years, keeping its length', () => {
+    // Previous from the first week, Next from the last: they stay put.
+    expect(withinSupportedYears({ from: '1999-12-20', to: '2000-02-20' })).toEqual({ from: '1999-12-27', to: '2000-02-27' })
+    expect(withinSupportedYears({ from: '2099-11-09', to: '2100-01-10' })).toEqual({ from: '2099-11-02', to: '2100-01-03' })
+    // 52 weeks from June 2099 end in the last supported week instead.
+    expect(withinSupportedYears(weeksFrom('2099-06-01', 52))).toEqual({ from: '2099-01-05', to: '2100-01-03' })
+    expect(withinSupportedYears({ from: '2026-01-05', to: '2026-01-11' })).toEqual({ from: '2026-01-05', to: '2026-01-11' })
   })
 
   it('caps a range at the longest the API serves', () => {
