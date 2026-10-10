@@ -78,15 +78,10 @@ export function useCapacity(from: ISODate, to: ISODate) {
   const saveWeeklyHours = useCallback(
     async (id: number, weeklyHours: number, version: string): Promise<SaveResult> => {
       // The server's row is fresh, whether a save stored it (200) or the server
-      // sent it back (412): one way to apply it, ordered against loads. If a
-      // load meanwhile showed the row at a third version (neither the one we
-      // sent nor this one), which of the two is newer can't be told, so the
-      // range is loaded again to settle it.
-      const confirmWith = (person: Person) => {
-        const seen = people.current[id]?.version
-        dispatch({ type: 'saveConfirmed', person, confirmedAt: ++clock.current })
-        if (seen !== undefined && seen !== version && seen !== person.version) retry()
-      }
+      // sent it back (412): one way to apply it, ordered against loads (the
+      // reducer decides, from the version it was sent on).
+      const confirmWith = (person: Person) =>
+        dispatch({ type: 'saveConfirmed', person, sentOn: version, confirmedAt: ++clock.current })
       // An earlier save of this person, on this same version, whose outcome is
       // unknown: it may be what the server holds by the time we get there.
       const doubt = unsure.current[id]
@@ -124,7 +119,7 @@ export function useCapacity(from: ISODate, to: ISODate) {
         }
       }
     },
-    [retry],
+    [],
   )
 
   return { state, retry, saveWeeklyHours }

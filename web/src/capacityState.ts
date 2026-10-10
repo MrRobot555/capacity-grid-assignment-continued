@@ -111,7 +111,7 @@ export type Action =
   | { type: 'fetchFailed'; key: string; issuedAt: number; error: string }
   /** The server's row after a save: what it stored (200), or what it holds
    * now (412). Either is fresh, so it is applied. */
-  | { type: 'saveConfirmed'; person: Person; confirmedAt: number }
+  | { type: 'saveConfirmed'; person: Person; sentOn: string; confirmedAt: number }
   | { type: 'saveRetrying'; id: number; version: string; value: number }
   | { type: 'saveGaveUp'; id: number; version: string; value: number }
 
@@ -146,9 +146,7 @@ export function capacityReducer(state: State, action: Action): State {
       const people = { ...state.people }
       for (const p of action.response.people) {
         // A load that was sent before a save was confirmed can carry the old
-        // weekly hours. The confirmed save is newer, so it wins. (When a load
-        // shows a third version before a save's answer arrives, the order
-        // can't be told; the save loop then loads again: see confirmWith.)
+        // weekly hours. The confirmed save is newer, so it wins.
         const confirmed = state.confirmedAt[p.id]
         const keepLocal = confirmed !== undefined && confirmed > action.issuedAt && p.id in people
         people[p.id] = keepLocal ? people[p.id] : { name: p.name, weeklyHours: p.weeklyHours, version: p.version }
@@ -180,6 +178,13 @@ export function capacityReducer(state: State, action: Action): State {
 
     case 'saveConfirmed': {
       const { id, name, weeklyHours, version } = action.person
+      // A load already showed the row at a third version: neither the one the
+      // save was sent on (If-Match) nor this one. A 200 was written over the
+      // version it was sent on, so that row is newer than ours; a 412's row
+      // was read at a time we can't place. Either way the row shown stays,
+      // like any loaded row, until the next load or save.
+      const shown = state.people[id]?.version
+      if (shown !== undefined && shown !== action.sentOn && shown !== version) return state
       return {
         ...state,
         people: { ...state.people, [id]: { name, weeklyHours, version } },

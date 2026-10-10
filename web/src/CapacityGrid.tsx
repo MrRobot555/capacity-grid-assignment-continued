@@ -68,11 +68,19 @@ type Editing = {
   failure: Failure | null
 }
 
-type Failure =
-  | { kind: 'refused'; error: unknown }
-  | { kind: 'unconfirmed'; hours: number; version: string; loadedFrom: number; error: unknown }
-  | { kind: 'changed'; loaded: number; uncertain: boolean; earlier?: number[] }
-  | { kind: 'unexpected'; error: unknown }
+/**
+ * A save that didn't end in "saved": the row it was sent on (If-Match), the
+ * value it tried, and how it ended. `uncertain`: an attempt of it may have
+ * been stored. `earlier`: values of earlier doubtful saves on the same version.
+ */
+type Failure = {
+  kind: 'refused' | 'unconfirmed' | 'changed' | 'unexpected'
+  sent: Person
+  hours: number
+  uncertain: boolean
+  earlier?: number[]
+  error?: unknown
+}
 
 // CapacityGrid renders one row per person and one column per week, showing
 // how allocated each person is and making over-allocation obvious.
@@ -131,6 +139,11 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
     ;(button ?? scrollerRef.current)?.focus({ preventScroll: true })
   })
 
+  // The row the next save is conditional on: the one the manager was last
+  // shown. A failure's message names the row as it is now, so while one is on
+  // screen, that row is it; before any, the row the editor opened with.
+  const shownRow = (e: Editing): Person => (e.failure ? { id: e.id, ...people[e.id] } : e.base)
+
   function openEditor(id: number) {
     const base = { id, ...people[id] }
     setEditing({ id, base, draft: String(base.weeklyHours), saving: false, invalid: null, failure: null })
@@ -147,7 +160,7 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
     const { id } = editing
     const hours = parseWeeklyHours(editing.draft)
     if (typeof hours === 'string') {
-      setEditing({ ...editing, invalid: hours, failure: null })
+      setEditing({ ...editing, base: shownRow(editing), invalid: hours, failure: null })
       return
     }
     // Nothing to save, unless an earlier save's outcome is unknown: then the
@@ -156,32 +169,29 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
       closeEditor()
       return
     }
-    setEditing({ ...editing, saving: true, invalid: null, failure: null })
+    const sent = shownRow(editing)
+    setEditing({ ...editing, base: sent, saving: true, invalid: null, failure: null })
     let failure: Failure
-    let base = editing.base
     try {
-      const result = await saveWeeklyHours(id, hours, base.version)
+      const result = await saveWeeklyHours(id, hours, sent.version)
       if (result.ok) {
         // A save can take seconds; if the manager has moved on, leave focus alone.
         if (focusIsInEditorOrNowhere()) returnFocusTo.current = id
         setEditing((cur) => (cur?.id === id ? null : cur))
         return
       }
-      // The manager is now told what the server holds, so saving again is a
-      // deliberate choice made on that row.
-      if ('changed' in result) base = result.changed
       failure =
         'changed' in result
-          ? { kind: 'changed', loaded: editing.base.weeklyHours, uncertain: result.uncertain, earlier: result.earlier }
+          ? { kind: 'changed', sent, hours, uncertain: result.uncertain, earlier: result.earlier }
           : result.unconfirmed
-            ? { kind: 'unconfirmed', hours, version: base.version, loadedFrom: base.weeklyHours, error: result.error }
-            : { kind: 'refused', error: result.error }
+            ? { kind: 'unconfirmed', sent, hours, uncertain: true, error: result.error }
+            : { kind: 'refused', sent, hours, uncertain: false, error: result.error }
     } catch (err) {
       // Anything unexpected must still end the save, or the editor would stay
       // at "Saving…" with every button locked.
-      failure = { kind: 'unexpected', error: err }
+      failure = { kind: 'unexpected', sent, hours, uncertain: false, error: err }
     }
-    setEditing((cur) => (cur?.id === id ? { ...cur, base, saving: false, failure } : cur))
+    setEditing((cur) => (cur?.id === id ? { ...cur, saving: false, failure } : cur))
   }
 
   return (
@@ -267,7 +277,7 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
               ? { text: editing.invalid, retry: false }
               : editing.failure && failureMessage(editing.failure, editingPerson, state.unsure[editing.id])
           }
-          onChange={(draft) => setEditing({ ...editing, draft, invalid: null, failure: null })}
+          onChange={(draft) => setEditing({ ...editing, base: shownRow(editing), draft, invalid: null, failure: null })}
           onSubmit={submit}
           onCancel={closeEditor}
         />
@@ -541,16 +551,25 @@ function useSlow(key: number | null) {
 }
 
 /**
- * What the editor says about the last save, from the row as it is now.
- * A doubtful save (unconfirmed) is settled once the row is seen at another
- * version: under If-Match it can no longer land, and the row says what the
- * server holds. Every other outcome names the server's current value.
+ * What the editor says about the last save, from the row as it is now. Once
+ * the row is past the version the save was sent on, the save can no longer
+ * land, and the row is what the server holds: the message names it, and only
+ * states whose value it is where that is known.
  */
 function failureMessage(
   f: Failure,
   row: { weeklyHours: number; version: string },
   doubt: { values: number[] } | undefined,
 ): { text: string; retry: boolean } {
+  if (row.version !== f.sent.version || f.kind === 'changed') {
+    if (f.uncertain && row.weeklyHours === f.hours) {
+      return { text: `The weekly hours on the server are ${formatHours(f.hours)}h now, the value you saved.`, retry: false }
+    }
+    return {
+      text: changedMessage({ now: row.weeklyHours, loaded: f.sent.weeklyHours, uncertain: f.uncertain, earlier: f.earlier }),
+      retry: true,
+    }
+  }
   switch (f.kind) {
     case 'refused':
       return {
@@ -560,18 +579,10 @@ function failureMessage(
         retry: true,
       }
     case 'unconfirmed':
-      if (row.version === f.version) {
-        return {
-          text: `Couldn't confirm the save of ${formatHours(f.hours)}h, so the server may or may not hold it. Saving again is safe. (${errorText(f.error)})`,
-          retry: true,
-        }
+      return {
+        text: `Couldn't confirm the save of ${formatHours(f.hours)}h, so the server may or may not hold it. Saving again is safe. (${errorText(f.error)})`,
+        retry: true,
       }
-      if (row.weeklyHours === f.hours) {
-        return { text: `Your save of ${formatHours(f.hours)}h went through: the server holds it now.`, retry: false }
-      }
-      return { text: changedMessage({ now: row.weeklyHours, loaded: f.loadedFrom, uncertain: true }), retry: true }
-    case 'changed':
-      return { text: changedMessage({ now: row.weeklyHours, ...f }), retry: true }
     case 'unexpected':
       return { text: `Something went wrong while saving: ${errorText(f.error)}. Saving again is safe.`, retry: true }
   }
@@ -579,14 +590,14 @@ function failureMessage(
 
 /**
  * What to say when the server holds another value than the one we sent. It
- * states what the server holds and, when it can be known, whose save that
- * was; it never claims "someone else" did it, because an earlier save of ours
- * may have.
+ * states what the server holds, never whose save that was: under If-Match an
+ * earlier save of ours and another manager's look the same, so it neither
+ * credits us nor blames "someone else".
  */
 function changedMessage(f: { now: number; loaded: number; uncertain: boolean; earlier?: number[] }): string {
   const now = `${formatHours(f.now)}h`
   if (f.earlier?.includes(f.now) && !f.uncertain) {
-    return `Not saved: your earlier save of ${now} went through after all, so the weekly hours are ${now} now. Your value is kept here; save again to apply it.`
+    return `Not saved: the weekly hours on the server are ${now} now, the value of your earlier save. Your value is kept here; save again to apply it.`
   }
   const what = f.now === f.loaded ? `saved again since you loaded them (still ${now})` : `changed since you loaded them (now ${now})`
   if (f.uncertain) {

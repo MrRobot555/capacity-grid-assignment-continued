@@ -908,3 +908,28 @@ func TestSaveTimeoutStaysInItsTransaction(t *testing.T) {
 		t.Errorf("statement_timeout is %q after a save, was %q: it leaked out of the save's transaction", after, before)
 	}
 }
+
+// Every answer is JSON, and says so: the client parses errors and successes
+// the same way.
+func TestAnswersAreJSON(t *testing.T) {
+	s := testServer(t)
+	for _, url := range []string{"/api/health", "/api/capacity?from=2026-01-05&to=2026-01-11", "/api/capacity?from=nope"} {
+		if ct := do(t, s, "GET", url, "").Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("%s: Content-Type %q", url, ct)
+		}
+	}
+}
+
+func TestHealthCountsPeople(t *testing.T) {
+	s := testServer(t)
+	var body struct {
+		OK     bool `json:"ok"`
+		People int  `json:"people"`
+	}
+	if err := json.NewDecoder(do(t, s, "GET", "/api/health", "").Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.OK || body.People != 500 {
+		t.Errorf("got %+v, want ok with the 500 seeded people", body)
+	}
+}

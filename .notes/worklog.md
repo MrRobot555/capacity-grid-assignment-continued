@@ -190,3 +190,11 @@ left unfinished. Append as you go; a line or two per entry is right.
 - A late 200/412 could put our older row back over a newer one a load had shown. When a third version has been seen, the order can't be told, so the range reloads.
 - Gates: "unchanged" against the current value, typing clears the failure, focus from the page body, aria-rowindex after scrolling, aria-expanded/invalid/busy, the tooltip's "(N over)", date bounds, and the "kept here" sentence.
 - The owner asked for a convergence report (per-round table and interpretation) at the end of every round, before the next reviewers start.
+
+## Review round 12 → one row per save; paused here
+
+- For the third round running, the findings came from the previous round's own fixes. Round 11 made the editor's message follow the row, but the save still went on the editor's base version: two notions of "the row this save is about". Now there is one rule, `shownRow`: the save is conditional on the row the manager was last shown (the current row while a failure's message is on screen, the opened-with row before). The separate base update is gone.
+- "Your save of 50h went through" was said when every attempt had been lost and the 50 could be another manager's. Under If-Match that can't be told apart, so no message says whose save a value was any more, including round 8's "your earlier save went through after all".
+- Round 11's reload for a late save answer read a copy of the state that lags the reducer. Deleted: the reducer now decides, from the version the save was sent on. A 200 is written over that version, so a third version a load showed is newer and stays.
+- R10-A1's gate had become vacuous (the message is derived either way); the one case where the outcomes differ (a load showed our value, then a refused attempt: done, editor closes) is now pinned.
+- Paused here at the owner's request. Next steps: `.notes/next-steps.md`.

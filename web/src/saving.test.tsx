@@ -121,6 +121,9 @@ async function edit(name: string, value: string) {
   fireEvent.submit(input.closest('form')!)
 }
 
+const nextRange = (rerender: (ui: ReactElement) => void) =>
+  rerender(<CapacityGrid from="2026-01-12" to="2026-01-25" onRangeChange={() => {}} />)
+
 function renderGrid() {
   return render(<CapacityGrid from="2026-01-05" to="2026-01-18" onRangeChange={() => {}} />)
 }
@@ -228,6 +231,7 @@ describe('what a failed save says', () => {
     await edit('Dee Okafor', '50')
     expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong while saving')
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
   })
 })
 
@@ -248,6 +252,7 @@ describe('when the row changed on the server', () => {
     expect(capButton('Dee Okafor')).toHaveTextContent(/^30h$/)
     expect(screen.getByLabelText('Weekly hours for Dee Okafor')).toHaveValue(50)
     expect(screen.getByRole('alert')).toHaveTextContent('Your value is kept here; save again to apply it.')
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
 
     // Saving again now is a deliberate choice, made on the current version.
     await edit('Dee Okafor', '50')
@@ -527,15 +532,18 @@ describe('focus when the editor closes', () => {
 // Doubt left by an earlier save is data: the version and value it was sent
 // with. The next save is told what became of it, without guessing who.
 describe('after an earlier save of the person was left unconfirmed', () => {
-  it("says the earlier save went through after all, not that someone else changed it", async () => {
+  // Whose 50 it is can't be known (another manager could have saved 50 too),
+  // so the message says what the server holds, and that it is our earlier value.
+  it('says the server holds the value of the earlier save, crediting nobody', async () => {
     // 50 is stored but every answer is lost; then the manager saves 20.
     const server = fakeServer(['store-and-lose-answer', ...Array(SAVE_ATTEMPTS - 1).fill('no-answer')])
     renderGrid()
     await edit('Dee Okafor', '50')
     await screen.findByText(/Couldn't confirm the save of 50h/)
     await edit('Dee Okafor', '20')
-    const alert = await screen.findByText(/went through after all/)
-    expect(alert).toHaveTextContent('Not saved: your earlier save of 50h went through after all, so the weekly hours are 50h now.')
+    const alert = await screen.findByText(/the value of your earlier save/)
+    expect(alert).toHaveTextContent('Not saved: the weekly hours on the server are 50h now, the value of your earlier save.')
+    expect(alert).not.toHaveTextContent('went through')
     expect(alert).not.toHaveTextContent('someone else')
     expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/) // the doubt is over: the row moved on
     expect(server.hours[4]).toBe(50)
@@ -651,6 +659,20 @@ describe('when a load settles a save whose attempt was unknown', () => {
     expect(capButton('Dee Okafor')).toHaveTextContent(/^30h$/)
   })
 
+  it('calls the save done when a load showed our value before a refused attempt', async () => {
+    retryTiming.delay = () => 300
+    const server = fakeServer(['lose-request', 'refuse'])
+    const { rerender } = renderGrid()
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(server.patches()).toHaveLength(1))
+    server.changeElsewhere(4, 50)
+    nextRange(rerender)
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/))
+    await waitFor(() => expect(server.patches()).toHaveLength(2)) // the refused one
+    // Like a 412 showing our value: done, the editor closes.
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+  })
+
   it('calls the save done when the load shows our own value', async () => {
     const server = fakeServer(['store-hold-and-lose-answer'])
     const { rerender } = renderGrid()
@@ -748,8 +770,6 @@ describe('what the grid draws, to the hundredth', () => {
 })
 
 // Round 11.
-const nextRange = (rerender: (ui: ReactElement) => void) =>
-  rerender(<CapacityGrid from="2026-01-12" to="2026-01-25" onRangeChange={() => {}} />)
 
 describe('a draft already known to be stale', () => {
   // The editor opened at 40; a load then brought another manager's 45. A save
@@ -801,7 +821,9 @@ describe("the editor's message after the save has ended", () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
   })
 
-  it('says the save went through when a later load shows our value', async () => {
+  // The load shows 50, but every attempt was lost: whose 50 it is can't be
+  // known, so the message says what the server holds and nothing more.
+  it('says the server holds our value when a later load shows it, without claiming it was ours', async () => {
     const server = fakeServer(Array(SAVE_ATTEMPTS).fill('lose-request'))
     const { rerender } = renderGrid()
     await edit('Dee Okafor', '50')
@@ -809,7 +831,10 @@ describe("the editor's message after the save has ended", () => {
     server.changeElsewhere(4, 50)
     nextRange(rerender)
 
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Your save of 50h went through'))
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('The weekly hours on the server are 50h now, the value you saved.'),
+    )
+    expect(screen.getByRole('alert')).not.toHaveTextContent('went through')
     expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument()
     expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/)
   })
@@ -836,7 +861,7 @@ describe("the editor's message after the save has ended", () => {
     server.changeElsewhere(4, 30)
     nextRange(rerender)
     await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^30h$/))
-    expect(screen.getByRole('alert')).toHaveTextContent('Not saved. could not update person')
+    expect(screen.getByRole('alert')).toHaveTextContent('Not saved: the weekly hours on the server were changed since you loaded them (now 30h)')
     expect(screen.getByRole('alert')).not.toHaveTextContent('still unconfirmed')
   })
 
@@ -855,9 +880,9 @@ describe("the editor's message after the save has ended", () => {
 
 describe('a save answered after a load showed a newer change', () => {
   // Ours stored 50 (v2), its answer delayed; another manager then saved 60
-  // (v3) and a load showed it. Our late 200 can't tell which is newer, so the
-  // grid loads again instead of putting 50 back as if it were current.
-  it('loads again rather than show our older value as current', async () => {
+  // (v3) and a load showed it. Under If-Match ours was written over v1, so 60
+  // came after it: the late 200 must not put 50 back.
+  it('keeps the newer row the load showed', async () => {
     const server = fakeServer(['store-and-hold-answer'])
     const { rerender } = renderGrid()
     await edit('Dee Okafor', '50')
@@ -865,12 +890,9 @@ describe('a save answered after a load showed a newer change', () => {
     server.changeElsewhere(4, 60)
     nextRange(rerender)
     await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^60h$/))
-    const loads = vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method !== 'PATCH').length
     act(() => server.release())
-    await waitFor(() =>
-      expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method !== 'PATCH').length).toBe(loads + 1),
-    )
-    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^60h$/))
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    expect(capButton('Dee Okafor')).toHaveTextContent(/^60h$/)
   })
 })
 
@@ -913,5 +935,89 @@ describe('focus and accessibility', () => {
       expect(screen.getByLabelText(label)).toHaveAttribute('min', '2000-01-01')
       expect(screen.getByLabelText(label)).toHaveAttribute('max', '2099-12-31')
     }
+  })
+})
+
+// Round 12. The editor's message names the row as it is now, so saving again
+// must be conditional on that row: the one the manager was last shown.
+describe('saving again after the message named a newer row', () => {
+  it('stores the value at the first Retry after a load settled an unconfirmed save', async () => {
+    const server = fakeServer(Array(SAVE_ATTEMPTS).fill('lose-request'))
+    const { rerender } = renderGrid()
+    await edit('Dee Okafor', '50')
+    await screen.findByText(/Couldn't confirm the save of 50h/)
+    server.changeElsewhere(4, 30)
+    nextRange(rerender)
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('(now 30h)'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(server.hours[4]).toBe(50))
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+  })
+
+  it('stores it after a conflict whose row a load then moved on again', async () => {
+    const server = fakeServer([])
+    const { rerender } = renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    server.changeElsewhere(4, 30)
+    await edit('Dee Okafor', '50')
+    await screen.findByText(/now 30h/, { selector: '[role=alert]' })
+    server.changeElsewhere(4, 35)
+    nextRange(rerender)
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('(now 35h)'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(server.hours[4]).toBe(50))
+  })
+
+  it('stores a new value typed after being told the server holds ours', async () => {
+    const server = fakeServer(Array(SAVE_ATTEMPTS).fill('lose-request'))
+    const { rerender } = renderGrid()
+    await edit('Dee Okafor', '50')
+    await screen.findByText(/Couldn't confirm the save of 50h/)
+    server.changeElsewhere(4, 50)
+    nextRange(rerender)
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('the value you saved'))
+
+    await edit('Dee Okafor', '55')
+    await waitFor(() => expect(server.hours[4]).toBe(55))
+  })
+
+  it('says "saved again (still 40h)" when the load shows the value the editor opened with', async () => {
+    const server = fakeServer(Array(SAVE_ATTEMPTS).fill('lose-request'))
+    const { rerender } = renderGrid()
+    await edit('Dee Okafor', '50')
+    await screen.findByText(/Couldn't confirm the save of 50h/)
+    server.changeElsewhere(4, 40)
+    nextRange(rerender)
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('saved again since you loaded them (still 40h)'))
+  })
+})
+
+describe('the editor while it saves again', () => {
+  it("doesn't keep the last failure on screen, and an invalid draft isn't a retry", async () => {
+    const server = fakeServer(['refuse', 'hold'])
+    renderGrid()
+    await edit('Dee Okafor', '50')
+    await screen.findByRole('alert')
+    fireEvent.submit(screen.getByLabelText('Weekly hours for Dee Okafor').closest('form')!)
+    await waitFor(() => expect(server.patches()).toHaveLength(2))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Saving…' })).toBeInTheDocument()
+    act(() => server.release())
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+
+    await edit('Dee Okafor', '500')
+    expect(await screen.findByRole('alert')).toHaveTextContent('between 0 and 168')
+    expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument()
+  })
+
+  it('counts only the rows a filter leaves, for screen readers', async () => {
+    fakeServer([])
+    const { container } = renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    expect(container.querySelector('table')).toHaveAttribute('aria-rowcount', '3')
+    fireEvent.change(screen.getByLabelText('Find person'), { target: { value: 'dee' } })
+    expect(container.querySelector('table')).toHaveAttribute('aria-rowcount', '2')
   })
 })
