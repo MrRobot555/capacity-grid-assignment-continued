@@ -42,6 +42,17 @@ func testServer(t *testing.T) *server {
 	return newServer(db)
 }
 
+// restoreCem puts Cem (id 3, seeded at 20 h) back after a test that writes
+// him. It writes with SQL, not through the handler under test: a broken
+// handler must not also leave the next run's data wrong.
+func restoreCem(t *testing.T, s *server) {
+	t.Cleanup(func() {
+		if _, err := s.db.Exec(context.Background(), `UPDATE people SET weekly_hours = 20 WHERE id = 3`); err != nil {
+			t.Errorf("restoring Cem: %v", err)
+		}
+	})
+}
+
 func do(t *testing.T, s *server, method, url, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
@@ -107,6 +118,9 @@ func TestCapacityRangeSnapsToWholeWeeks(t *testing.T) {
 		{"from=2025-12-31&to=2026-01-11", []string{"2025-12-29", "2026-01-05"}},
 		// A Sunday belongs to the week that started the Monday before, not the next one.
 		{"from=2026-01-04&to=2026-01-04", []string{"2025-12-29"}},
+		// "to" is inclusive: a Monday "to" brings in its own week.
+		{"from=2026-01-05&to=2026-01-12", []string{"2026-01-05", "2026-01-12"}},
+		{"from=2026-01-05&to=2026-01-05", []string{"2026-01-05"}},
 	} {
 		rec := do(t, s, "GET", "/api/capacity?"+tc.query, "")
 		var resp capacityResponse
@@ -154,12 +168,22 @@ func TestCapacityAllowsExactlyMaxWeeks(t *testing.T) {
 	}
 }
 
+// A range far too long is refused without building its weeks: the list stops
+// growing at the limit, so it is the one allocation made up front.
+func TestTooLongRangeIsRefusedWithoutBuildingIt(t *testing.T) {
+	from, to := time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)
+	if _, ok := weekStarts(from, to); ok {
+		t.Fatal("0001..9999 must be refused")
+	}
+	if allocs := testing.AllocsPerRun(5, func() { weekStarts(from, to) }); allocs > 1 {
+		t.Errorf("%v allocations: the weeks of a refused range were built anyway", allocs)
+	}
+}
+
 func TestUpdatePerson(t *testing.T) {
 	s := testServer(t)
 	// Cem (id 3) is restored afterwards so the fixture test stays valid.
-	t.Cleanup(func() {
-		do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`)
-	})
+	restoreCem(t, s)
 
 	rec := do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 32.5}`)
 	if rec.Code != http.StatusOK {
@@ -210,7 +234,7 @@ func TestUpdatePerson(t *testing.T) {
 // so the server's "not saved" is what the manager sees.
 func TestUpdatePersonGivesUpOnALockedRow(t *testing.T) {
 	s := testServer(t)
-	t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
+	restoreCem(t, s)
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -293,7 +317,7 @@ func TestCommitOutcome(t *testing.T) {
 // The save path's own 500 must leave a trace in the log, like the capacity one.
 func TestUpdatePersonLogsWhyItFailed(t *testing.T) {
 	s := testServer(t)
-	t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
+	restoreCem(t, s)
 	logs := captureLog(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -310,7 +334,7 @@ func TestUpdatePersonLogsWhyItFailed(t *testing.T) {
 
 func TestUpdatePersonAcceptsZero(t *testing.T) {
 	s := testServer(t)
-	t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
+	restoreCem(t, s)
 	if rec := do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 0}`); rec.Code != http.StatusOK || storedHours(t, s, 3) != 0 {
 		t.Errorf("0 h (someone on leave, like the seeded Eli) must be accepted: status %d", rec.Code)
 	}
@@ -321,14 +345,14 @@ func TestServerTimeoutsOutlastASave(t *testing.T) {
 	if srv.WriteTimeout <= saveDeadline() {
 		t.Errorf("WriteTimeout %v must outlast the save deadline %v, or a slow save's answer is cut off", srv.WriteTimeout, saveDeadline())
 	}
-	if srv.ReadHeaderTimeout <= 0 || srv.IdleTimeout <= 0 {
-		t.Error("the server must time out slow headers and idle connections")
+	if srv.ReadHeaderTimeout <= 0 || srv.ReadTimeout <= 0 || srv.IdleTimeout <= 0 {
+		t.Error("the server must time out slow headers, slow bodies and idle connections")
 	}
 }
 
 func TestUpdatePersonAcceptsTheWholeWeek(t *testing.T) {
 	s := testServer(t)
-	t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
+	restoreCem(t, s)
 	if rec := do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 168}`); rec.Code != http.StatusOK {
 		t.Errorf("168 h (every hour of the week) must be accepted: status %d", rec.Code)
 	}
@@ -379,7 +403,7 @@ func TestLostCommitIsUnknownAndARepeatSettlesIt(t *testing.T) {
 			saved := updateTimeout
 			updateTimeout = 300 * time.Millisecond // so the stall case ends at the 2.3 s deadline
 			t.Cleanup(func() { updateTimeout = saved })
-			t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
+			restoreCem(t, s)
 			version := versionOf(t, s, 3)
 
 			proxied := newServer(proxiedPool(t, tc.mode))
@@ -455,7 +479,7 @@ func decodeBody(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 // the row changed (with the row as it is now), and nothing of theirs is stored.
 func TestSaveOnAStaleVersionIsRefused(t *testing.T) {
 	s := testServer(t)
-	t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
+	restoreCem(t, s)
 	v := versionOf(t, s, 3)
 
 	first := patchIfMatch(t, s, "3", v, `{"weeklyHours": 24}`)
@@ -489,7 +513,7 @@ func TestSaveOnAStaleVersionIsRefused(t *testing.T) {
 // its sender saw, so it can't overwrite anything that happened since.
 func TestLateCopyCannotOverwriteANewerChange(t *testing.T) {
 	s := testServer(t)
-	t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
+	restoreCem(t, s)
 	v := versionOf(t, s, 3)
 	do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 28}`) // a newer change lands first
 	if late := patchIfMatch(t, s, "3", v, `{"weeklyHours": 26}`); late.Code != http.StatusPreconditionFailed {
@@ -664,7 +688,7 @@ func TestSaveDeadlineChain(t *testing.T) {
 // with a definite "not saved" instead of waiting for ever.
 func TestUpdatePersonGivesUpWaitingForAConnection(t *testing.T) {
 	s := testServer(t)
-	t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
+	restoreCem(t, s)
 	cfg, err := pgxpool.ParseConfig(os.Getenv("DATABASE_URL"))
 	if err != nil {
 		t.Fatal(err)
@@ -749,7 +773,7 @@ func TestIfMatchIsReadAsInHTTP(t *testing.T) {
 
 func TestIfMatchListMatchesAnyVersion(t *testing.T) {
 	s := testServer(t)
-	t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
+	restoreCem(t, s)
 	req := httptest.NewRequest("PATCH", "/api/people/3", strings.NewReader(`{"weeklyHours": 22}`))
 	req.Header.Set("If-Match", `"999999999", "`+versionOf(t, s, 3)+`"`)
 	rec := httptest.NewRecorder()
@@ -763,7 +787,7 @@ func TestIfMatchListMatchesAnyVersion(t *testing.T) {
 // 404 on that path too, not as a "changed" row.
 func TestUnknownPersonIsNotFoundWithIfMatch(t *testing.T) {
 	s := testServer(t)
-	t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
+	restoreCem(t, s)
 	if rec := patchIfMatch(t, s, "999999", "1", `{"weeklyHours": 10}`); rec.Code != http.StatusNotFound {
 		t.Errorf("status %d %s, want 404", rec.Code, rec.Body)
 	}
@@ -787,7 +811,7 @@ func TestUnknownPersonIsNotFoundWithIfMatch(t *testing.T) {
 func TestConcurrentSaveOnTheSameVersionLosesNothing(t *testing.T) {
 	s := testServer(t)
 	ctx := context.Background()
-	t.Cleanup(func() { do(t, s, "PATCH", "/api/people/3", `{"weeklyHours": 20}`) })
+	restoreCem(t, s)
 	v := versionOf(t, s, 3)
 
 	other, err := s.db.Begin(ctx)
@@ -801,7 +825,7 @@ func TestConcurrentSaveOnTheSameVersionLosesNothing(t *testing.T) {
 
 	done := make(chan *httptest.ResponseRecorder, 1)
 	go func() { done <- patchIfMatch(t, s, "3", v, `{"weeklyHours": 26}`) }()
-	time.Sleep(300 * time.Millisecond) // ours is now waiting for their row lock
+	waitUntilBlockedOnALock(t, s)
 	if err := other.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -816,5 +840,71 @@ func TestConcurrentSaveOnTheSameVersionLosesNothing(t *testing.T) {
 	}
 	if h := storedHours(t, s, 3); h != 28 {
 		t.Errorf("stored %v, want the other manager's 28: an update was lost", h)
+	}
+}
+
+// waitUntilBlockedOnALock returns once a session is waiting for a row lock, so
+// a test can release the lock knowing the other side is already queued behind
+// it, rather than hoping a sleep was long enough.
+func waitUntilBlockedOnALock(t *testing.T, s *server) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var waiting int
+		if err := s.db.QueryRow(context.Background(), `
+			SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no session ever waited for the row lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A body is read up to 1 KiB: anything longer is refused before it reaches
+// the database. (Whitespace is valid JSON, so without the limit this body
+// would be decoded and the unknown person looked up.)
+func TestUpdatePersonRefusesAnOversizedBody(t *testing.T) {
+	s := testServer(t)
+	body := `{"weeklyHours": 20` + strings.Repeat(" ", 2000) + `}`
+	if rec := do(t, s, "PATCH", "/api/people/2147483647", body); rec.Code != http.StatusBadRequest {
+		t.Errorf("status %d, want 400 for a 2 KB body", rec.Code)
+	}
+}
+
+// statement_timeout is set for the save's transaction only. Set for the
+// session, it would stay on the pooled connection and cut off whatever query
+// ran on it next.
+func TestSaveTimeoutStaysInItsTransaction(t *testing.T) {
+	s := testServer(t)
+	restoreCem(t, s)
+	cfg, err := pgxpool.ParseConfig(os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.MaxConns = 1 // so the check runs on the connection the save used
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	show := func() string {
+		var v string
+		if err := pool.QueryRow(context.Background(), `SHOW statement_timeout`).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	before := show()
+	if rec := do(t, newServer(pool), "PATCH", "/api/people/3", `{"weeklyHours": 21}`); rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	if after := show(); after != before {
+		t.Errorf("statement_timeout is %q after a save, was %q: it leaked out of the save's transaction", after, before)
 	}
 }

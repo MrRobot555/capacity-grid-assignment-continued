@@ -23,6 +23,7 @@ type Outcome =
   | 'timeout' // stored, but the client gave up waiting
   | 'no-answer' // the client gave up waiting, and nothing was stored
   | 'hold' // stores and answers only when released
+  | 'store-hold-and-lose-answer' // stores at once, then drops the connection when released
 
 type Row = { id: number; name: string; weeklyHours: number; version: string }
 
@@ -77,11 +78,17 @@ function fakeServer(outcomes: Outcome[]) {
         await new Promise<void>((resolve) => (release = resolve))
         set(id, value)
         return json(200, row(id))
+      case 'store-hold-and-lose-answer':
+        set(id, value)
+        await new Promise<void>((resolve) => (release = resolve))
+        throw new TypeError('Failed to fetch')
     }
   })
   vi.stubGlobal('fetch', fetchMock)
   return {
     hours,
+    /** Allocated hours per person per week, as the next load returns them. */
+    allocated,
     /** Someone else changes the row (a new version), outside this grid. */
     changeElsewhere: set,
     patches: () => fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH'),
@@ -610,5 +617,123 @@ describe('when a load shows the row at a new version during the retries', () => 
     expect(alert).not.toHaveTextContent('may or may not hold it')
     expect(capButton('Dee Okafor')).toHaveTextContent(/^30h$/)
     expect(server.patches()).toHaveLength(2) // stopped: no attempts after the one that met the new version
+  })
+})
+
+// Round 10. Every way the row can be seen at another version after an attempt
+// of ours was unknown (a 412, or a load) is read the same way: our value means
+// the save is done, another value is what the server holds now.
+describe('when a load settles a save whose attempt was unknown', () => {
+  it('reports what the server holds even when the next attempt is refused outright', async () => {
+    retryTiming.delay = () => 300
+    const server = fakeServer(['lose-request', 'refuse'])
+    const { rerender } = renderGrid()
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(server.patches()).toHaveLength(1))
+    server.changeElsewhere(4, 30)
+    rerender(<CapacityGrid from="2026-01-12" to="2026-01-25" onRangeChange={() => {}} />)
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^30h$/))
+
+    const alert = await screen.findByRole('alert', {}, { timeout: 2000 })
+    expect(server.patches()).toHaveLength(2) // the refused one
+    expect(alert).toHaveTextContent('changed since you loaded them (now 30h)')
+    expect(alert).toHaveTextContent('your attempt may have been stored before that')
+    expect(alert).not.toHaveTextContent('may or may not hold it')
+    expect(capButton('Dee Okafor')).toHaveTextContent(/^30h$/)
+  })
+
+  it('calls the save done when the load shows our own value', async () => {
+    const server = fakeServer(['store-hold-and-lose-answer'])
+    const { rerender } = renderGrid()
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(server.patches()).toHaveLength(1))
+    rerender(<CapacityGrid from="2026-01-12" to="2026-01-25" onRangeChange={() => {}} />)
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/))
+    act(() => server.release()) // only now is the answer lost
+
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(server.patches()).toHaveLength(1)
+    expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/)
+  })
+})
+
+describe('a draft started before someone else changed the row', () => {
+  // The editor opened at 40, the manager typed 50, then another manager saved
+  // 45 and a load brought it in. Saving 50 now would overwrite 45 unseen.
+  it('comes back as a conflict, not a silent overwrite', async () => {
+    const server = fakeServer([])
+    const { rerender } = renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    fireEvent.click(capButton('Dee Okafor'))
+    fireEvent.change(screen.getByLabelText('Weekly hours for Dee Okafor'), { target: { value: '50' } })
+    server.changeElsewhere(4, 45)
+    rerender(<CapacityGrid from="2026-01-12" to="2026-01-25" onRangeChange={() => {}} />)
+    await screen.findByText(/now 45h/)
+    fireEvent.submit(screen.getByLabelText('Weekly hours for Dee Okafor').closest('form')!)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Not saved: the weekly hours on the server were changed since you loaded them (now 45h)',
+    )
+    expect(server.hours[4]).toBe(45)
+    // Saving again is now a choice made knowing about the 45.
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(server.hours[4]).toBe(50))
+  })
+})
+
+describe('an earlier save that never landed', () => {
+  // 50 never landed (every attempt lost). Then 20 is stored, its answer lost,
+  // and before the repeat another manager saves 50. The 412 shows 50, one of
+  // our earlier values, but whether ours landed can't be known: neither "Not
+  // saved" nor "went through after all" is true.
+  it('is not credited with a value the server holds while this save was in doubt', async () => {
+    const server = fakeServer([...Array(SAVE_ATTEMPTS).fill('lose-request'), 'store-and-lose-answer'])
+    renderGrid()
+    await edit('Dee Okafor', '50')
+    await screen.findByText(/Couldn't confirm the save of 50h/)
+    const original = vi.mocked(fetch).getMockImplementation()!
+    let patches = 0
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      if (init?.method === 'PATCH' && ++patches === 2) server.changeElsewhere(4, 50)
+      return original(url, init)
+    })
+    await edit('Dee Okafor', '20')
+    const alert = await screen.findByText(/your attempt may have been stored before that/)
+    expect(alert).toHaveTextContent('changed since you loaded them (now 50h)')
+    expect(alert).not.toHaveTextContent('Not saved')
+    expect(alert).not.toHaveTextContent('went through after all')
+  })
+})
+
+describe('what the grid draws, to the hundredth', () => {
+  it('leaves the bar empty for nothing allocated against no capacity', async () => {
+    const server = fakeServer([])
+    server.changeElsewhere(1, 0) // Ana: 0 allocated in the week of 5 Jan, 0 capacity
+    renderGrid()
+    await screen.findByText('Ana Ferreira', { selector: 'th' })
+    const anaCell = within(rowOf('Ana Ferreira')).getAllByRole('cell')[1]
+    expect(anaCell.style.getPropertyValue('--fill')).toBe('0')
+    expect(anaCell).toHaveTextContent('–')
+  })
+
+  it('shows the overage as the difference of the hours shown', async () => {
+    const server = fakeServer([])
+    server.changeElsewhere(1, 39.005) // shown as 39.01h
+    server.allocated[1] = [0, 39.02] // shown as 39.02h
+    renderGrid()
+    await screen.findByText('Ana Ferreira', { selector: 'th' })
+    const anaCell = within(rowOf('Ana Ferreira')).getAllByRole('cell')[2]
+    expect(anaCell).toHaveClass('over')
+    expect(anaCell).toHaveTextContent('39.02+0.01') // not 39.02 − 39.005 rounded: +0.02
+  })
+
+  it('marks an unconfirmed capacity with "?" in the editor title too', async () => {
+    fakeServer(Array(SAVE_ATTEMPTS).fill('lose-request'))
+    renderGrid()
+    await edit('Dee Okafor', '50')
+    await screen.findByText(/Couldn't confirm the save of 50h/)
+    const title = screen.getByText(/weekly hours \(now/).closest('.cap-editor-title')!
+    expect(title).toHaveTextContent('(now 40h ?)')
   })
 })

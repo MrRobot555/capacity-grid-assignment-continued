@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   addDays,
   formatShort,
+  isInSupportedWeek,
   isISODate,
   isSupportedDate,
   limitWeeks,
@@ -107,6 +108,15 @@ describe('dates a person can type', () => {
     expect(isSupportedDate('0202-01-05')).toBe(false)
     expect(isSupportedDate('2026-01-05')).toBe(true)
     expect(isSupportedDate('2026-02-30')).toBe(false)
+  })
+
+  it('accepts the whole week of a supported date, as ranges snap to weeks', () => {
+    // The weeks of 1 January 2000 and 31 December 2099 start or end outside them.
+    expect(isInSupportedWeek('1999-12-27')).toBe(true)
+    expect(isInSupportedWeek('2100-01-03')).toBe(true)
+    expect(isInSupportedWeek('1999-12-26')).toBe(false)
+    expect(isInSupportedWeek('2100-01-04')).toBe(false)
+    expect(isInSupportedWeek('0202-01-05')).toBe(false)
   })
 
   it('caps a range at the longest the API serves', () => {

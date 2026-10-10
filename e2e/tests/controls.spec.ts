@@ -73,6 +73,25 @@ test('an unusable URL range falls back to the default (this week + 7)', async ({
   await expect(page.locator('thead th.week')).toHaveCount(8)
 })
 
+// Ranges snap to whole weeks, so at the edges of the supported years
+// (2000–2099) the URL holds a date just outside them. It must load back, and
+// navigation stops there instead of writing a range that wouldn't.
+test('a range at the edge of the supported years survives a reload', async ({ page }) => {
+  await page.goto('/?from=2000-01-01&to=2000-02-27')
+  await expect(page).toHaveURL(/from=1999-12-27&to=2000-02-27/)
+  await page.reload()
+  await expect(page).toHaveURL(/from=1999-12-27&to=2000-02-27/)
+  await page.getByRole('button', { name: 'Previous week' }).click()
+  await expect(page).toHaveURL(/from=1999-12-27&to=2000-02-27/)
+
+  await page.goto('/?from=2099-11-02&to=2099-12-31')
+  await expect(page).toHaveURL(/from=2099-11-02&to=2100-01-03/)
+  await page.reload()
+  await expect(page).toHaveURL(/from=2099-11-02&to=2100-01-03/)
+  await page.getByRole('button', { name: 'Next week' }).click()
+  await expect(page).toHaveURL(/from=2099-11-02&to=2100-01-03/)
+})
+
 // A date input reports every half-typed year (0002, 0020, 0202…). Stopping
 // half-way through the year and leaving the field must not request one.
 test('a half-typed year is never requested', async ({ page }) => {

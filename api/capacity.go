@@ -106,14 +106,8 @@ func (s *server) handleCapacity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Count before building: a range like 0001..9999 would otherwise build half
-	// a million weeks just to be refused.
-	if int(mondayOf(to).Sub(mondayOf(from)).Hours()/(24*7))+1 > maxWeeks {
-		writeError(w, http.StatusBadRequest, "range is too long: at most 106 weeks per request")
-		return
-	}
-	weeks := weekStarts(from, to)
-	if len(weeks) > maxWeeks {
+	weeks, ok := weekStarts(from, to)
+	if !ok {
 		writeError(w, http.StatusBadRequest, "range is too long: at most 106 weeks per request")
 		return
 	}
@@ -156,13 +150,18 @@ func loadCapacity(ctx context.Context, db querier, weeks []time.Time) ([]personC
 	return people, rows.Err()
 }
 
-// weekStarts returns the Monday of every week that overlaps from..to.
-func weekStarts(from, to time.Time) []time.Time {
-	var weeks []time.Time
+// weekStarts returns the Monday of every week that overlaps from..to, or false
+// if that is more than maxWeeks. It stops at the limit, so a range like
+// 0001..9999 is refused without building half a million weeks first.
+func weekStarts(from, to time.Time) ([]time.Time, bool) {
+	weeks := make([]time.Time, 0, maxWeeks)
 	for wk := mondayOf(from); !wk.After(to); wk = wk.AddDate(0, 0, 7) {
+		if len(weeks) == maxWeeks {
+			return nil, false
+		}
 		weeks = append(weeks, wk)
 	}
-	return weeks
+	return weeks, true
 }
 
 func mondayOf(t time.Time) time.Time {

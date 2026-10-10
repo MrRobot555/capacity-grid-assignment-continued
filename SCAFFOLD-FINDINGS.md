@@ -152,7 +152,7 @@ day-by-day oracle (`TestCapacityMatchesDayByDayOracle`).
 
 ---
 
-*How these were found:* data probing before any code, then eight rounds of
+*How these were found:* data probing before any code, then rounds of
 review by two independent reviewers (one adversarial with reproductions, one
 auditing the tests by mutation), each finding recorded with a verdict in
 `.notes/review-register.md`.

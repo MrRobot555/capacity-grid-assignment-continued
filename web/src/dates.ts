@@ -34,6 +34,17 @@ export function isSupportedDate(value: string | null): value is ISODate {
   return year >= MIN_YEAR && year <= MAX_YEAR
 }
 
+/**
+ * Whether the week containing `date` has a day in a supported year. Ranges
+ * snap to whole weeks, so the URL can hold 1999-12-27 (the week of 1 January
+ * 2000) or 2100-01-03; those have to load back.
+ */
+export function isInSupportedWeek(value: string | null): value is ISODate {
+  if (!isISODate(value)) return false
+  const monday = mondayOf(value)
+  return isSupportedDate(monday) || isSupportedDate(addDays(monday, 6))
+}
+
 export const MIN_DATE = `${MIN_YEAR}-01-01`
 export const MAX_DATE = `${MAX_YEAR}-12-31`
 

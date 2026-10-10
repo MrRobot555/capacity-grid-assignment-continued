@@ -1,7 +1,7 @@
 # Next steps: resuming the review cycle
 
-Paused at the owner's request after **review round 9** (all of its findings
-fixed, committed and pushed). Resume with **round 10**.
+Last completed: **review round 10** (all of its findings fixed, committed and
+pushed). Next: **round 11**.
 
 ## Where things are
 
@@ -13,7 +13,7 @@ fixed, committed and pushed). Resume with **round 10**.
 | Register | `.notes/review-register.md`: every finding with a verdict, plus the Recurrence table. |
 | Narrative | `.notes/worklog.md` (append only), `CONTINUED.md`, `SCAFFOLD-FINDINGS.md`. |
 
-Findings per round: 23 → 18 → 14 → 9 → 23 → 13 → 6 → 14 → 9. Round 5's rise
+Findings per round: 23 → 18 → 14 → 9 → 23 → 13 → 6 → 14 → 9 → 16. Round 5's rise
 taught the counting rule below; since then the design has been simplified, not
 grown.
 
@@ -24,7 +24,7 @@ grown.
    - a **gate auditor**: "could this test pass while its defect is present?", proven by mutation testing in a scratch copy.
 2. **Freeze the tree** while they work: no edits, commits or rebuilds until **both** have reported.
 3. **Triage everything into the register before fixing.** Never re-raise a closed finding without new evidence.
-4. **The 3-recurrence rule:** count recurrences per *area* across the whole register, **never resetting after a redesign**. At three, redesign rather than patch. If redesigns keep recurring, the next one must **remove** mechanisms, not add them. (The owner's corrections are in the register's Recurrence section.)
+4. **The 3-recurrence rule:** count recurrences per *area* across the whole register, **never resetting after a redesign**. Since round 10 (owner, 2026-10-10) the count is a signal, not an order: at three, choose a redesign or a patch on the merits, whichever converges without leaving a defect, and record the choice and why. If redesigns keep recurring, the next one must **remove** mechanisms, not add them. (The owner's corrections are in the register's Recurrence section.)
 5. **Every fix gets a gate, and every gate is checked:** it must fail on the pre-fix code, or kill the mutant it targets. Then run the half-migration grep: did the removed concept actually go away, or just move?
 6. **After every round:** all suites green, the seed intact, then **commit and push** to the continuation repo.
 7. A cycle closes only when a round returns **zero** findings. Reviewers are told not to invent findings to avoid saying "converged".
@@ -51,7 +51,7 @@ awk '/^COPY public.people/{f=1;next} /^\\\./{f=0} f' db/seed.sql | awk -F'\t' '{
 docker compose exec -T db psql -U capacity -d capacity -At -c "select id||'='||weekly_hours from people" | sort | diff /tmp/seed.txt -
 ```
 
-## Reviewer briefs (for round 10)
+## Reviewer briefs (as used in round 10)
 
 Both briefs include:
 - the repo path and branch `continued`;
@@ -61,7 +61,7 @@ Both briefs include:
 - the hard rules: no repo edits, scratch dir only, restore the DB, `-timeout`, and who may run the shared-DB suites;
 - "zero findings is a valid answer; say converged if true".
 
-The **adversarial** brief summarises the current design (row version from `xmin`; `If-Match` with 412 + the current row; doubt as a (version, values) pair resolved by observing the row; retries that stop once the save can no longer land) and asks for anything still wrong, in any area.
+The **adversarial** brief summarises the current design (row version from `xmin`; `If-Match` with 412 + the current row; doubt as a (version, values) pair resolved by observing the row; retries that stop once the save can no longer land; one `settledBy` reading of a row seen at another version; the editor saving on the version it was opened from) and asks for anything still wrong, in any area.
 
 The **gate auditor** brief asks it to verify a sample of the last round's kill claims, then hunt for unguarded behaviour, vacuous or flaky tests, and doc claims that name tests which don't show them. It does its mutation testing in an rsync copy, serving mutated web code on :3001.
 
@@ -70,4 +70,4 @@ The **gate auditor** brief asks it to verify a sample of the last round's kill c
 - **`DECISIONS.md`** is the owner's text and was written before the review rounds. Some statements are now outdated:
   - "Two managers editing the same person: right now the last save wins without any warning". Since round 6 the grid gets a 412 conflict instead.
   - "Retrying is fine either way, it just sets the value again". A repeat is now conditional on the version.
-- **`CONTEXT.md`** is private and untracked, and is stale since round 1. Rewrite it before the interview.
+- **`CONTEXT.md`** is the owner's private helper for writing `DECISIONS.md` (untracked). It describes the submitted state; whether to update it is the owner's call.

@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type UIEvent } from 'react'
+import type { Person } from './api'
 import {
   allocationStatus,
   capacityView,
@@ -49,6 +50,12 @@ const OVERSCAN = 8
 
 type Editing = {
   id: number
+  /**
+   * The row the draft was started from. The save is conditional on its
+   * version, so a change made since then (seen by a load or not) comes back
+   * as a conflict instead of being overwritten.
+   */
+  base: Person
   draft: string
   saving: boolean
   error: string | null
@@ -113,8 +120,9 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
     ;(button ?? scrollerRef.current)?.focus({ preventScroll: true })
   })
 
-  function openEditor(id: number, weeklyHours: number) {
-    setEditing({ id, draft: String(weeklyHours), saving: false, error: null, failed: false })
+  function openEditor(id: number) {
+    const base = { id, ...people[id] }
+    setEditing({ id, base, draft: String(base.weeklyHours), saving: false, error: null, failed: false })
   }
 
   function closeEditor() {
@@ -139,18 +147,21 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
     }
     setEditing({ ...editing, saving: true, error: null })
     let message: string
-    const loaded = people[id].weeklyHours
+    let base = editing.base
     try {
-      const result = await saveWeeklyHours(id, hours, people[id].version)
+      const result = await saveWeeklyHours(id, hours, base.version)
       if (result.ok) {
         // A save can take seconds; if the manager has moved on, leave focus alone.
         if (focusIsInEditorOrNowhere()) returnFocusTo.current = id
         setEditing((cur) => (cur?.id === id ? null : cur))
         return
       }
+      // The manager is now told what the server holds, so saving again is a
+      // deliberate choice made on that row.
+      if ('changed' in result) base = result.changed
       message =
         'changed' in result
-          ? changedMessage({ now: result.changed.weeklyHours, loaded, ...result })
+          ? changedMessage({ now: result.changed.weeklyHours, loaded: editing.base.weeklyHours, ...result })
           : result.unconfirmed
             ? `Couldn't confirm the save of ${formatHours(hours)}h, so the server may or may not hold it. Saving again is safe. (${errorText(result.error)})`
             : `Not saved. ${errorText(result.error)}` +
@@ -162,7 +173,7 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
       // at "Saving…" with every button locked.
       message = `Something went wrong while saving: ${errorText(err)}. Saving again is safe.`
     }
-    setEditing((cur) => (cur?.id === id ? { ...cur, saving: false, error: message, failed: true } : cur))
+    setEditing((cur) => (cur?.id === id ? { ...cur, base, saving: false, error: message, failed: true } : cur))
   }
 
   return (
@@ -325,7 +336,7 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
                         // While a save is in flight (including its repeats) its editor
                         // must stay open, or its outcome would have nowhere to be shown.
                         disabled={isEditing || editing?.saving === true}
-                        onClick={() => openEditor(row.id, row.weeklyHours)}
+                        onClick={() => openEditor(row.id)}
                       >
                         {capacity.text}
                         {!capacity.certain && <span className="unconfirmed"> ?</span>}
