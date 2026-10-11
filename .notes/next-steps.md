@@ -37,6 +37,7 @@ grown.
 - **After every mutant run**, diff all 500 people against `db/seed.sql` and restore any difference. Mutants let writes through that the real code refuses (round 5 left person 10 at 22).
 - **Every test that writes a person restores it** in `t.Cleanup`.
 - **Any `go test` that can hang gets `-timeout`.** Never kill a container mid-test: that once committed an abandoned UPDATE.
+- **Chain doc updates and the commit with `&&`, and check the register before committing.** In round 13 a doc script failed on a quoting error, the commit ran anyway on the next line, and the register update missed the commit.
 - **Make checks print their result.** A silent `test -z "$(gofmt -l .)" &&` guard once skipped the whole Go suite without saying so.
 - **Never edit** `DECISIONS.md` (owner's text), `db/`, `docker-compose.yml`, the Dockerfiles or the `Makefile`.
 
