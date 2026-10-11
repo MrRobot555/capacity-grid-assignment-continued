@@ -59,6 +59,26 @@ test('typing a To date ends the range with the week containing it', async ({ pag
   expect(requested).toEqual(['?from=2025-12-29&to=2026-02-01'])
 })
 
+// At the edges each rule gives way to the plain range: From on the shown
+// Sunday, or To on the shown Monday, is one week, not a moved range.
+test('typing From on the last day shown, or To on the first, shows that one week', async ({ page }) => {
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  const from = page.getByLabel('From', { exact: true })
+  await from.focus()
+  await page.keyboard.type('01182026', { delay: 80 }) // Sunday 18 Jan, the shown To
+  await page.keyboard.press('Enter')
+  await expectWeeks(page, ['12 Jan'])
+  await expect(page).toHaveURL(/from=2026-01-12&to=2026-01-18/)
+
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  const to = page.getByLabel('To', { exact: true })
+  await to.focus()
+  await page.keyboard.type('12292025', { delay: 80 }) // Monday 29 Dec, the shown From
+  await page.keyboard.press('Enter')
+  await expectWeeks(page, ['29 Dec'])
+  await expect(page).toHaveURL(/from=2025-12-29&to=2026-01-04/)
+})
+
 test('typing a To date before From keeps the number of weeks, ending with that week', async ({ page }) => {
   await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
   const to = page.getByLabel('To', { exact: true })

@@ -103,10 +103,12 @@ export type State = {
   /** When each person's latest save was confirmed, on the same clock as `issuedAt`. */
   confirmedAt: Record<number, number>
   /**
-   * When each person's shown version became known, on the same clock: the
-   * `issuedAt` of the load that showed it, or the `confirmedAt` of the save.
-   * A load sent after that reads the row at that version or a newer one. (A
-   * load is applied only if no later one was sent before its answer.)
+   * When each person's shown version first became known, on the same clock:
+   * the `issuedAt` of the load that first showed it, or the `confirmedAt` of
+   * the save answer that did. A load sent after that reads the row at that
+   * version or a newer one. (A load is applied only if no later one was sent
+   * before its answer.) Seeing the same version again changes nothing: it is
+   * not news, and moving the time later would place later loads before it.
    */
   seenAt: Record<number, number>
   /** The save `confirmedAt` refers to, when the server stored it (200): the
@@ -123,7 +125,8 @@ export type Action =
   | { type: 'fetchFailed'; key: string; issuedAt: number; error: string }
   /** The server's row after a save: what it stored (200, with the version
    * it was sent on), or what it holds now (412). Applied, except a stored row
-   * that a load has already shown superseded (see the reducer). */
+   * that a load has already shown superseded, and a row already shown, which
+   * is not news (see the reducer). */
   | { type: 'saveConfirmed'; person: Person; sent?: { on: string; seenAt: number }; confirmedAt: number }
   | { type: 'saveRetrying'; id: number; version: string; value: number }
   | { type: 'saveGaveUp'; id: number; version: string; value: number }
@@ -173,8 +176,8 @@ export function capacityReducer(state: State, action: Action): State {
           s !== undefined && action.issuedAt > s.onSeenAt && p.version !== s.sentOn && p.version !== s.version
         const keepLocal = confirmed !== undefined && confirmed > action.issuedAt && p.id in people && !superseded
         if (keepLocal) continue
+        if (people[p.id]?.version !== p.version) seenAt[p.id] = action.issuedAt
         people[p.id] = { name: p.name, weeklyHours: p.weeklyHours, version: p.version }
-        seenAt[p.id] = action.issuedAt
       }
       // A row seen at another version than a doubtful save was sent on: that
       // save can no longer land, so the doubt is over.
@@ -207,11 +210,15 @@ export function capacityReducer(state: State, action: Action): State {
       // A stored row (200), where a load already showed a third version:
       // neither the one the save was sent on (If-Match) nor ours. Ours was
       // written over the version sent on, so the shown row came after it and
-      // stays. A 412's row is always applied: when it was read can't be
-      // placed against a load, and the save loop settles on that same row, so
-      // the grid and the editor never decide on different rows.
+      // stays. A 412's row is always applied (or already shown): when it was
+      // read can't be placed against a load, and the save loop settles on that
+      // same row, so the grid and the editor never decide on different rows.
       const shown = state.people[id]?.version
       if (action.sent !== undefined && shown !== undefined && shown !== action.sent.on && shown !== version) return state
+      // The row is already shown (a load showed it first): the answer is not
+      // news. Taking it as a new confirmation would place loads sent after
+      // that load before it, and keep this row over the newer rows they show.
+      if (shown === version) return state
       return {
         ...state,
         people: { ...state.people, [id]: { name, weeklyHours, version } },

@@ -492,6 +492,15 @@ describe('the editor', () => {
 })
 
 describe('focus when the editor closes', () => {
+  it('returns to the capacity button when the value is saved unchanged', async () => {
+    const server = fakeServer([])
+    renderGrid()
+    await edit('Dee Okafor', '40')
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    expect(capButton('Dee Okafor')).toHaveFocus()
+    expect(server.patches()).toHaveLength(0)
+  })
+
   it('returns to the capacity button after Escape', async () => {
     fakeServer([])
     renderGrid()
@@ -1015,6 +1024,69 @@ describe('a load and a save placed against each other through the hook', () => {
     await releaseLoad()
     expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/)
     expect(server.hours[4]).toBe(50)
+  })
+
+  // A save's answer that shows the row a load already showed is not news. A
+  // load sent after that first showing reads it or a newer row, so a newer
+  // row it shows must win.
+  const thirdRange = (rerender: (ui: ReactElement) => void) =>
+    rerender(<CapacityGrid from="2026-01-19" to="2026-02-01" onRangeChange={() => {}} />)
+
+  it('lets a later load win after a late 200 re-showed the row a load showed first', async () => {
+    const server = fakeServer(['store-and-hold-answer', 'store'])
+    const { rerender } = renderGrid()
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(server.patches()).toHaveLength(1))
+    nextRange(rerender) // shows v2/50, ours, before our answer
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/))
+    const releaseLoad = holdLoads({ readNow: false })
+    thirdRange(rerender) // sent after v2 was known
+    await waitFor(() => expect(loads()).toBe(3))
+    act(() => server.release()) // our 200 re-shows v2
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    await edit('Dee Okafor', '60')
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    server.changeElsewhere(4, 70)
+    await releaseLoad()
+    expect(capButton('Dee Okafor')).toHaveTextContent(/^70h$/)
+  })
+
+  it('lets a later load win after a 412 re-showed our value a load showed first', async () => {
+    const server = fakeServer(['store-and-lose-answer', 'store'])
+    retryTiming.delay = () => 600
+    const { rerender } = renderGrid()
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(server.patches()).toHaveLength(1))
+    nextRange(rerender) // shows v2/50 during the backoff
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/))
+    const releaseLoad = holdLoads({ readNow: false })
+    thirdRange(rerender)
+    await waitFor(() => expect(loads()).toBe(3))
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument(), {
+      timeout: 3000,
+    })
+    server.changeElsewhere(4, 70)
+    await releaseLoad()
+    expect(capButton('Dee Okafor')).toHaveTextContent(/^70h$/)
+  })
+
+  it("lets a later load win after a 412 re-showed another manager's row a load showed first", async () => {
+    const server = fakeServer(['hold-then-check'])
+    const { rerender } = renderGrid()
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(server.patches()).toHaveLength(1))
+    server.changeElsewhere(4, 60)
+    nextRange(rerender) // shows v2/60
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^60h$/))
+    const releaseLoad = holdLoads({ readNow: false })
+    thirdRange(rerender)
+    await waitFor(() => expect(loads()).toBe(3))
+    act(() => server.release()) // our save meets v2: a 412 re-showing v2/60
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('(now 60h)'))
+    server.changeElsewhere(4, 70)
+    await releaseLoad()
+    expect(capButton('Dee Okafor')).toHaveTextContent(/^70h$/)
+    expect(screen.getByRole('alert')).toHaveTextContent('(now 70h)')
   })
 
   it("places a load against a 412's row, not against an earlier stored save", async () => {

@@ -1,7 +1,7 @@
 # Next steps: resuming the review cycle
 
-Last completed: **review round 16** (all of its findings fixed, committed and
-pushed). Next: **round 17**: run the two reviewers with the briefs below,
+Last completed: **review round 17** (all of its findings fixed, committed and
+pushed). Next: **round 18**: run the two reviewers with the briefs below,
 updated to HEAD and to the last round's changes.
 
 ## Where things are
@@ -14,7 +14,7 @@ updated to HEAD and to the last round's changes.
 | Register | `.notes/review-register.md`: every finding with a verdict, plus the Recurrence table. |
 | Narrative | `.notes/worklog.md` (append only), `CONTINUED.md`, `SCAFFOLD-FINDINGS.md`. |
 
-Findings per round: 23 → 18 → 14 → 9 → 23 → 13 → 6 → 14 → 9 → 16 → 9 → 11 → 8 → 9 → 5 → 8. Round 5's rise
+Findings per round: 23 → 18 → 14 → 9 → 23 → 13 → 6 → 14 → 9 → 16 → 9 → 11 → 8 → 9 → 5 → 8 → 4. Round 5's rise
 taught the counting rule below; since then the design has been simplified, not
 grown.
 
@@ -65,7 +65,7 @@ Both briefs include:
 - the hard rules: no repo edits, scratch dir only, restore the DB, `-timeout`, and who may run the shared-DB suites;
 - "zero findings is a valid answer; say converged if true".
 
-The **adversarial** brief summarises the current design (row version from `xmin`; `If-Match` with 412 + the current row; doubt as a (version, values) pair resolved by observing the row; retries that stop once the save can no longer land; one `settledBy` reading of a row seen at another version; the editor saving on the row the manager was last shown (`shownRow`); a late stored answer (200) decided in the reducer from the version it was sent on, a 412's row always applied; a load placed against a stored save by when the version it was sent on became known (`seenAt`); messages that never say whose save a value was) and asks for anything still wrong, in any area.
+The **adversarial** brief summarises the current design (row version from `xmin`; `If-Match` with 412 + the current row; doubt as a (version, values) pair resolved by observing the row; retries that stop once the save can no longer land; one `settledBy` reading of a row seen at another version; the editor saving on the row the manager was last shown (`shownRow`); a late stored answer (200) decided in the reducer from the version it was sent on, a 412's row always applied; a load placed against a stored save by when the version it was sent on first became known (`seenAt`); an answer that re-shows the row already shown is not news and changes nothing; messages that never say whose save a value was) and asks for anything still wrong, in any area.
 
 The **gate auditor** brief asks it to verify a sample of the last round's kill claims, then hunt for unguarded behaviour, vacuous or flaky tests, and doc claims that name tests which don't show them. It does its mutation testing in an rsync copy, serving mutated web code on :3001.
 

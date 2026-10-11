@@ -227,3 +227,8 @@ left unfinished. Append as you go; a line or two per entry is right.
 - Correction to the "Save race" note under Grid above: it was covered only in `capacityState.test.ts`, with the stamps given by hand. The hook, which makes the stamps, is now tested through five orders of events in `saving.test.tsx`.
 - To before From keeps the number of weeks, the mirror of From past To.
 - The weeks' order inside each person's array is checked under a second plan (`enable_hashagg = off`); today's plan happened to return them in order.
+
+## Review round 17 → a row seen again is not news
+
+- Round 16's `seenAt` was set again by a save's answer that only re-showed the row a load had shown, and a 412 like that set `confirmedAt` (older). Both made a later load look sent before the row was known, so its newer row was kept off the grid. Such an answer now changes nothing, and a load re-showing a version leaves its `seenAt`: a version is known from the first time it was shown.
+- Considered a redesign into explicit read intervals; it came out as the existing rules plus this one, so the change removes the re-stamping rather than adding a model.
