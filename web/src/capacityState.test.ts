@@ -22,6 +22,32 @@ const response = (deeHours: number): CapacityResponse => ({
 
 const run = (...actions: Action[]): State => actions.reduce(capacityReducer, initialState)
 
+/** A load of range B, sent at `issuedAt` and answered just after. */
+const load = (issuedAt: number, res: CapacityResponse, key = 'B'): Action[] => [
+  { type: 'fetchStarted', key, issuedAt },
+  { type: 'fetchSucceeded', key, issuedAt, receivedAt: issuedAt + 0.5, response: res },
+]
+
+/** Dee's row at another version. */
+const deeAt = (hours: number, version: string): CapacityResponse => ({
+  ...response(hours),
+  people: response(hours).people.map((p) => (p.id === 4 ? { ...p, version } : p)),
+})
+
+/** The answer to a save of Dee sent on `over` at `at`: stored (200) or not (412). */
+const saved = (
+  hours: number,
+  version: string,
+  o: { over: string; at: number; stored?: boolean; receivedAt?: number },
+): Action => ({
+  type: 'saveAnswered',
+  person: { id: 4, name: 'Dee Okafor', weeklyHours: hours, version },
+  stored: o.stored ?? true,
+  sentOn: o.over,
+  sentAt: o.at,
+  receivedAt: o.receivedAt ?? o.at + 0.5,
+})
+
 describe('allocationStatus', () => {
   it('classifies against capacity', () => {
     expect(allocationStatus(45, 40)).toBe('over')
@@ -46,9 +72,10 @@ describe('allocationStatus', () => {
   })
 
   it('says how sure it is about a capacity', () => {
-    expect(capacityView(40, 'certain')).toEqual({ text: '40h', certain: true, note: null })
-    expect(capacityView(40, 'retrying')).toMatchObject({ certain: false, note: expect.stringMatching(/Sending it again/) })
-    expect(capacityView(40, 'unknown')).toMatchObject({ certain: false, note: expect.stringMatching(/may hold a different value/) })
+    expect(capacityView(40, 'certain')).toEqual({ text: '40h', certain: true, note: null, doubt: null })
+    expect(capacityView(40, 'retrying')).toMatchObject({ certain: false, note: expect.stringMatching(/Sending it again/), doubt: 'last save not confirmed' })
+    expect(capacityView(40, 'unknown')).toMatchObject({ certain: false, note: expect.stringMatching(/may hold a different value/), doubt: 'last save not confirmed' })
+    expect(capacityView(40, 'checking')).toMatchObject({ certain: false, note: expect.stringMatching(/may hold a newer value/), doubt: 'may not be the latest, loading again' })
   })
 
   it('treats any allocation against zero capacity as over, without dividing', () => {
@@ -62,7 +89,7 @@ describe('capacityReducer', () => {
     const state = run(
       { type: 'fetchStarted', key: 'A', issuedAt: 1 },
       { type: 'fetchStarted', key: 'B', issuedAt: 2 },
-      { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) },
+      { type: 'fetchSucceeded', key: 'A', issuedAt: 1, receivedAt: 1.5, response: response(40) },
     )
     expect(state.data).toBeNull()
     expect(state.loading).toBe(true)
@@ -83,8 +110,8 @@ describe('capacityReducer', () => {
       { type: 'fetchStarted', key: 'A', issuedAt: 1 },
       { type: 'fetchStarted', key: 'B', issuedAt: 2 },
       { type: 'fetchStarted', key: 'A', issuedAt: 3 },
-      { type: 'fetchSucceeded', key: 'A', issuedAt: 3, response: response(40) },
-      { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(10) },
+      { type: 'fetchSucceeded', key: 'A', issuedAt: 3, receivedAt: 3.5, response: response(40) },
+      { type: 'fetchSucceeded', key: 'A', issuedAt: 1, receivedAt: 1.5, response: response(10) },
     )
     expect(state.people[4].weeklyHours).toBe(40)
   })
@@ -102,7 +129,7 @@ describe('capacityReducer', () => {
   it('keeps the previous range on screen when a load fails', () => {
     const state = run(
       { type: 'fetchStarted', key: 'A', issuedAt: 1 },
-      { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) },
+      { type: 'fetchSucceeded', key: 'A', issuedAt: 1, receivedAt: 1.5, response: response(40) },
       { type: 'fetchStarted', key: 'B', issuedAt: 2 },
       { type: 'fetchFailed', key: 'B', issuedAt: 2, error: 'boom' },
     )
@@ -118,6 +145,7 @@ describe('capacityReducer', () => {
         type: 'fetchSucceeded',
         key: 'A',
         issuedAt: 1,
+        receivedAt: 1.5,
         response: {
           weeks: ['2026-01-05'],
           people: [
@@ -130,90 +158,56 @@ describe('capacityReducer', () => {
     expect(state.data?.rows.map((r) => r.id)).toEqual([1, 2])
   })
 
-  it('applies a confirmed save to the person, leaving allocations alone', () => {
-    const state = run(
-      { type: 'fetchStarted', key: 'A', issuedAt: 1 },
-      { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) },
-      { type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 50, version: 'v2' }, sent: { on: 'v1', seenAt: 0 }, confirmedAt: 2 },
-    )
-    expect(state.people[4].weeklyHours).toBe(50)
+  it('applies a stored save to the person, leaving allocations alone', () => {
+    const state = run(...load(1, response(40)), saved(50, 'v2', { over: 'v1', at: 2 }))
+    expect(state.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 50, version: 'v2' })
     expect(state.data?.rows.find((r) => r.id === 4)?.allocated).toEqual([45, 40])
   })
 
-  it('does not let a load sent before a save overwrite it', () => {
-    // Navigate (load issued at 2), save confirms at 3, then the load arrives
-    // carrying the old value.
+  it('keeps our save over a load sent before it that shows the version it was written over', () => {
     const state = run(
-      { type: 'fetchStarted', key: 'A', issuedAt: 1 },
-      { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) },
+      ...load(1, response(40)),
       { type: 'fetchStarted', key: 'B', issuedAt: 2 },
-      { type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 50, version: 'v2' }, sent: { on: 'v1', seenAt: 0 }, confirmedAt: 3 },
-      { type: 'fetchSucceeded', key: 'B', issuedAt: 2, response: response(40) },
+      saved(50, 'v2', { over: 'v1', at: 3 }),
+      { type: 'fetchSucceeded', key: 'B', issuedAt: 2, receivedAt: 5, response: response(40) },
     )
     expect(state.data?.key).toBe('B')
     // The whole row, version included: a stale version beside the kept hours
     // would make the next save a false "changed on the server".
     expect(state.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 50, version: 'v2' })
+    expect(certaintyOf(state, 4)).toBe('certain')
   })
 
   it('keeps a person unsure through a load that still shows the version the save was sent on', () => {
     // At that version, a lost attempt of the save can still land.
     for (const doubt of [{ type: 'saveRetrying', id: 4, version: 'v1', value: 50 }, { type: 'saveGaveUp', id: 4, version: 'v1', value: 50 }] as Action[]) {
-      const state = run(
-        doubt,
-        { type: 'fetchStarted', key: 'A', issuedAt: 5 },
-        { type: 'fetchSucceeded', key: 'A', issuedAt: 5, response: response(40) },
-      )
+      const state = run(doubt, ...load(5, response(40)))
       expect(certaintyOf(state, 4)).not.toBe('certain')
       expect(state.people[4].weeklyHours).toBe(40) // the load still updates the value shown
     }
   })
 
-  it("takes a newer version from a later load (someone else saved meanwhile)", () => {
-    const first = run(
-      { type: 'fetchStarted', key: 'A', issuedAt: 1 },
-      { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) },
-    )
-    const later = { ...response(30), people: response(30).people.map((p) => (p.id === 4 ? { ...p, version: 'v3' } : p)) }
-    const reloaded = [
-      { type: 'fetchStarted', key: 'A', issuedAt: 2 },
-      { type: 'fetchSucceeded', key: 'A', issuedAt: 2, response: later },
-    ] as Action[]
-    expect(reloaded.reduce(capacityReducer, first).people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 30, version: 'v3' })
+  it('takes a newer version from a later load (someone else saved meanwhile)', () => {
+    const state = run(...load(1, response(40)), ...load(3, deeAt(30, 'v3')))
+    expect(state.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 30, version: 'v3' })
   })
 
   it("keeps the row's version from loads and from saves, for the next If-Match", () => {
-    const loaded = run(
-      { type: 'fetchStarted', key: 'A', issuedAt: 1 },
-      { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) },
-    )
+    const loaded = run(...load(1, response(40)))
     expect(loaded.people[4].version).toBe('v1')
-    const saved = capacityReducer(loaded, {
-      type: 'saveConfirmed',
-      person: { id: 4, name: 'Dee Okafor', weeklyHours: 50, version: 'v9' },
-      sent: { on: 'v1', seenAt: 0 }, confirmedAt: 2,
-    })
-    expect(saved.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 50, version: 'v9' })
+    const stored = capacityReducer(loaded, saved(50, 'v9', { over: 'v1', at: 2 }))
+    expect(stored.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 50, version: 'v9' })
   })
 
   it('ends the doubt when a load shows the row at another version', () => {
     // Under If-Match the doubtful save can no longer land; the load is the truth.
-    const moved = { ...response(30), people: response(30).people.map((p) => (p.id === 4 ? { ...p, version: 'v7' } : p)) }
-    const state = run(
-      { type: 'saveGaveUp', id: 4, version: 'v1', value: 50 },
-      { type: 'fetchStarted', key: 'A', issuedAt: 5 },
-      { type: 'fetchSucceeded', key: 'A', issuedAt: 5, response: moved },
-    )
+    const state = run({ type: 'saveGaveUp', id: 4, version: 'v1', value: 50 }, ...load(5, deeAt(30, 'v7')))
     expect(certaintyOf(state, 4)).toBe('certain')
     expect(state.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 30, version: 'v7' })
   })
 
   it('never records a doubt about a version the row has already moved past', () => {
-    const loaded = run(
-      { type: 'fetchStarted', key: 'A', issuedAt: 1 },
-      { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) }, // Dee at v1
-    )
-    const late = capacityReducer(loaded, { type: 'saveGaveUp', id: 4, version: 'v0', value: 50 })
+    const late = capacityReducer(run(...load(1, response(40))), { type: 'saveGaveUp', id: 4, version: 'v0', value: 50 })
     expect(certaintyOf(late, 4)).toBe('certain')
   })
 
@@ -229,77 +223,93 @@ describe('capacityReducer', () => {
     const state = run(
       { type: 'saveRetrying', id: 4, version: 'v1', value: 50 },
       { type: 'saveGaveUp', id: 1, version: 'v1', value: 36 },
-      // A confirmed save of Ana says nothing about Dee.
-      { type: 'saveConfirmed', person: { id: 1, name: 'Ana Ferreira', weeklyHours: 36, version: 'v2' }, sent: { on: 'v1', seenAt: 0 }, confirmedAt: 3 },
+      // A stored save of Ana says nothing about Dee.
+      { type: 'saveAnswered', person: { id: 1, name: 'Ana Ferreira', weeklyHours: 36, version: 'v2' }, stored: true, sentOn: 'v1', sentAt: 2, receivedAt: 3 },
     )
     expect(certaintyOf(state, 4)).toBe('retrying')
     expect(certaintyOf(state, 1)).toBe('certain')
   })
 
-  it('clears "unknown" with a confirmed save of that person (or a load at another version)', () => {
-    const gaveUp = run({ type: 'saveGaveUp', id: 4, version: 'v1', value: 50 })
-    expect(certaintyOf(gaveUp, 4)).toBe('unknown')
-    const saved = capacityReducer(gaveUp, {
-      type: 'saveConfirmed',
-      person: { id: 4, name: 'Dee Okafor', weeklyHours: 40, version: 'v2' },
-      sent: { on: 'v1', seenAt: 0 }, confirmedAt: 2,
-    })
-    expect(certaintyOf(saved, 4)).toBe('certain')
+  it('ends the doubt on a version with any answer to a save sent on it, stored or not', () => {
+    for (const stored of [true, false]) {
+      const state = run(
+        ...load(1, response(40)),
+        { type: 'saveGaveUp', id: 4, version: 'v1', value: 50 },
+        saved(40, 'v2', { over: 'v1', at: 3, stored }),
+      )
+      expect(certaintyOf(state, 4)).toBe('certain')
+    }
   })
 
-  it("keeps a row a load showed at a third version over a save's late answer", () => {
-    // Our save (sent on v1) stored v2; before its answer arrived, a load showed
-    // v3. Under If-Match ours was written over v1, so v3 came after it.
-    const atV3 = { ...response(60), people: response(60).people.map((p) => (p.id === 4 ? { ...p, version: 'v3' } : p)) }
+  it("ignores a save's answer whose row is known to come before the row shown", () => {
+    // A 412 read v2/60; before it arrived, a load showed v2, then a later load v3/70.
     const state = run(
-      { type: 'fetchStarted', key: 'A', issuedAt: 1 },
-      { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: atV3 },
-      { type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 50, version: 'v2' }, sent: { on: 'v1', seenAt: 0 }, confirmedAt: 2 },
+      ...load(1, response(40)),
+      ...load(3, deeAt(60, 'v2')),
+      ...load(5, deeAt(70, 'v3')),
+      saved(60, 'v2', { over: 'v1', at: 2, stored: false, receivedAt: 7 }),
     )
+    expect(state.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 70, version: 'v3' })
+    expect(certaintyOf(state, 4)).toBe('certain')
+  })
+
+  it('ignores our late stored row when the row shown came after the version ours was written over', () => {
+    // Ours stored v2 over v1; a load sent after v1 was known showed v3 first.
+    const state = run(...load(1, response(40)), ...load(3, deeAt(60, 'v3')), saved(50, 'v2', { over: 'v1', at: 2, receivedAt: 6 }))
     expect(state.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 60, version: 'v3' })
-    // While the row is at the version sent on, or at the answer's own, it applies.
-    const sentOnShown = capacityReducer(state, {
-      type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 70, version: 'v4' }, sent: { on: 'v3', seenAt: 0 }, confirmedAt: 3,
-    })
-    expect(sentOnShown.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 70, version: 'v4' })
   })
 
-  it('takes a newer row from a load sent once the version ours was written over was known, but not from one sent before', () => {
-    const atV3 = { ...response(60), people: response(60).people.map((p) => (p.id === 4 ? { ...p, version: 'v3' } : p)) }
-    // v1 known from load A (1). Load B was sent at 2, before ours was even
-    // sent; ours stored v2/50 on v1, and another manager saved v3/60. B can
-    // only have read v1 or later, so v3 came after ours: it wins.
-    const after = run(
-      { type: 'fetchStarted', key: 'A', issuedAt: 1 },
-      { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) },
-      { type: 'fetchStarted', key: 'B', issuedAt: 2 },
-      { type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 50, version: 'v2' }, sent: { on: 'v1', seenAt: 1 }, confirmedAt: 5 },
-      { type: 'fetchSucceeded', key: 'B', issuedAt: 2, response: atV3 },
-    )
-    expect(after.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 60, version: 'v3' })
-    // Ours was sent on v2, known only from an earlier save's answer (3); load
-    // B was sent at 2, before that, and may show a version older than v2: ours stays.
-    const before = run(
-      { type: 'fetchStarted', key: 'A', issuedAt: 1 },
-      { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) },
-      { type: 'fetchStarted', key: 'B', issuedAt: 2 },
-      { type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 45, version: 'v2' }, sent: { on: 'v1', seenAt: 1 }, confirmedAt: 3 },
-      { type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 50, version: 'v4' }, sent: { on: 'v2', seenAt: 3 }, confirmedAt: 5 },
-      { type: 'fetchSucceeded', key: 'B', issuedAt: 2, response: atV3 },
-    )
-    expect(before.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 50, version: 'v4' })
-  })
-
-  it('takes the server value from a load sent after the save', () => {
+  it('takes a row sent after the shown version was known, whatever came between', () => {
+    // Two stored saves of ours (v2, v3), then a 412 sent after v3 was known
+    // shows another manager's v4.
     const state = run(
-      { type: 'fetchStarted', key: 'A', issuedAt: 1 },
-      { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) },
-      { type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 50, version: 'v2' }, sent: { on: 'v1', seenAt: 0 }, confirmedAt: 2 },
-      { type: 'fetchStarted', key: 'B', issuedAt: 3 },
-      // Someone else changed it again since: the newer load wins.
-      { type: 'fetchSucceeded', key: 'B', issuedAt: 3, response: response(36) },
+      ...load(1, response(40)),
+      saved(45, 'v2', { over: 'v1', at: 2 }),
+      saved(50, 'v3', { over: 'v2', at: 4 }),
+      saved(60, 'v4', { over: 'v3', at: 6, stored: false }),
     )
-    expect(state.people[4].weeklyHours).toBe(36)
+    expect(state.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 60, version: 'v4' })
+  })
+
+  it("keeps the row shown when an answer can't be placed, marks it, and asks for the range again", () => {
+    // A load sent before our two saves shows v4: it may be older than ours or newer.
+    const unplaced = run(
+      ...load(1, response(40)),
+      { type: 'fetchStarted', key: 'B', issuedAt: 2 },
+      saved(45, 'v2', { over: 'v1', at: 3 }),
+      saved(50, 'v3', { over: 'v2', at: 5 }),
+      { type: 'fetchSucceeded', key: 'B', issuedAt: 2, receivedAt: 7, response: deeAt(60, 'v4') },
+    )
+    expect(unplaced.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 50, version: 'v3' })
+    expect(certaintyOf(unplaced, 4)).toBe('checking')
+    expect(unplaced.recheck).toBe(1)
+    // A load sent after that settles it.
+    const settled = load(8, deeAt(60, 'v4')).reduce(capacityReducer, unplaced)
+    expect(settled.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 60, version: 'v4' })
+    expect(certaintyOf(settled, 4)).toBe('certain')
+  })
+
+  it('stays marked through answers sent before the unplaced one arrived', () => {
+    const unplaced = run(
+      ...load(1, response(40)),
+      { type: 'fetchStarted', key: 'B', issuedAt: 2 },
+      saved(50, 'v2', { over: 'v1', at: 3 }),
+      { type: 'fetchSucceeded', key: 'B', issuedAt: 2, receivedAt: 5, response: deeAt(60, 'v4') },
+    )
+    const sameSentEarlier = capacityReducer(unplaced, saved(50, 'v2', { over: 'v1', at: 4, stored: false, receivedAt: 6 }))
+    expect(certaintyOf(sameSentEarlier, 4)).toBe('checking')
+  })
+
+  it('keeps when a version was first known: seeing it again is not news', () => {
+    // v2 first shown by a load (answer at 3.5); our 412 re-shows it later (6).
+    // A 412 sent at 4, after v2 was known, that shows v3 is newer.
+    const state = run(
+      ...load(1, response(40)),
+      ...load(3, deeAt(60, 'v2')),
+      saved(60, 'v2', { over: 'v1', at: 2, stored: false, receivedAt: 6 }),
+      saved(70, 'v3', { over: 'v2', at: 4, stored: false, receivedAt: 7 }),
+    )
+    expect(state.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 70, version: 'v3' })
   })
 })
 
@@ -315,6 +325,8 @@ describe('parseWeeklyHours', () => {
     expect(parseWeeklyHours('168')).toBe(168)
     expect(parseWeeklyHours('-1')).toBeTypeOf('string')
     expect(parseWeeklyHours('169')).toBeTypeOf('string')
+    expect(parseWeeklyHours('168.5')).toBeTypeOf('string')
+    expect(parseWeeklyHours('-0.5')).toBeTypeOf('string')
     expect(parseWeeklyHours('abc')).toBeTypeOf('string')
   })
 })

@@ -145,6 +145,7 @@ func TestCapacityRejectsBadRanges(t *testing.T) {
 		"from=%202026-01-05&to=2026-01-11",
 		"from=2026-01-05&to=2028-01-17", // 107 weeks
 		"from=0000-01-03&to=0000-01-09", // year 0: weeks would format as "-0001-12-27"
+		"from=0000-01-01&to=0001-01-01", // starts in year 0, ends in year 1
 	} {
 		if rec := do(t, s, "GET", "/api/capacity?"+q, ""); rec.Code != http.StatusBadRequest {
 			t.Errorf("%q: status %d, want 400", q, rec.Code)
@@ -214,6 +215,8 @@ func TestUpdatePerson(t *testing.T) {
 		{"/api/people/3", `{"weeklyHours": "10"}`, http.StatusBadRequest},
 		{"/api/people/3", `{"weeklyHours": -1}`, http.StatusBadRequest},
 		{"/api/people/3", `{"weeklyHours": 169}`, http.StatusBadRequest},
+		{"/api/people/3", `{"weeklyHours": 168.5}`, http.StatusBadRequest},
+		{"/api/people/3", `{"weeklyHours": -0.5}`, http.StatusBadRequest},
 		{"/api/people/3", `{"weeklyHours": 10, "name": "x"}`, http.StatusBadRequest},
 		{"/api/people/999999", `{"weeklyHours": 10}`, http.StatusNotFound},
 		{"/api/people/0", `{"weeklyHours": 10}`, http.StatusBadRequest},

@@ -27,6 +27,8 @@ type Outcome =
   | 'store-hold-and-lose-answer' // stores at once, then drops the connection when released
   | 'store-and-hold-answer' // stores at once, answers (with the row as stored) when released
   | 'hold-then-check' // held until released; only then checked against If-Match, like a request queued behind a lock
+  | 'hold-then-refuse' // held until released, then our API's JSON 500: nothing stored
+  | 'check-then-hold' // checked against If-Match on arrival (stored, or a 412 with the row then), answered only when released
 
 type Row = { id: number; name: string; weeklyHours: number; version: string }
 
@@ -58,9 +60,15 @@ function fakeServer(outcomes: Outcome[]) {
     if (outcome === 'lose-request') throw new TypeError('Failed to fetch')
     if (outcome === 'no-answer') throw new DOMException('signal timed out', 'TimeoutError')
     if (outcome === 'refuse') return json(500, { error: 'could not update person' })
+    if (outcome === 'hold-then-refuse') {
+      await new Promise<void>((resolve) => (release = resolve))
+      return json(500, { error: 'could not update person' })
+    }
     if (outcome === 'hold-then-check') await new Promise<void>((resolve) => (release = resolve))
     if (ifMatch !== row(id).version) {
-      return json(412, { error: 'the weekly hours were changed on the server since they were loaded', current: row(id) })
+      const conflict = json(412, { error: 'the weekly hours were changed on the server since they were loaded', current: row(id) })
+      if (outcome === 'check-then-hold') await new Promise<void>((resolve) => (release = resolve))
+      return conflict
     }
     switch (outcome) {
       case 'store':
@@ -85,6 +93,7 @@ function fakeServer(outcomes: Outcome[]) {
       case 'hold-then-check':
         set(id, value)
         return json(200, row(id))
+      case 'check-then-hold':
       case 'store-and-hold-answer': {
         set(id, value)
         const stored = row(id)
@@ -665,7 +674,7 @@ describe('when a load shows the row at a new version during the retries', () => 
     expect(alert).toHaveTextContent('your attempt may have been stored before that')
     expect(alert).not.toHaveTextContent('may or may not hold it')
     expect(capButton('Dee Okafor')).toHaveTextContent(/^30h$/)
-    expect(server.patches()).toHaveLength(2) // stopped: no attempts after the one that met the new version
+    expect(server.patches()).toHaveLength(1) // stopped: no attempt once a load showed the row at a new version
   })
 })
 
@@ -673,18 +682,19 @@ describe('when a load shows the row at a new version during the retries', () => 
 // of ours was unknown (a 412, or a load) is read the same way: our value means
 // the save is done, another value is what the server holds now.
 describe('when a load settles a save whose attempt was unknown', () => {
+  // The load arrives while the next attempt is on its way, which is then refused.
   it('reports what the server holds even when the next attempt is refused outright', async () => {
-    retryTiming.delay = () => 300
-    const server = fakeServer(['lose-request', 'refuse'])
+    const server = fakeServer(['lose-request', 'hold-then-refuse'])
     const { rerender } = renderGrid()
     await edit('Dee Okafor', '50')
-    await waitFor(() => expect(server.patches()).toHaveLength(1))
+    await waitFor(() => expect(server.patches()).toHaveLength(2))
     server.changeElsewhere(4, 30)
     rerender(<CapacityGrid from="2026-01-12" to="2026-01-25" onRangeChange={() => {}} />)
     await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^30h$/))
+    act(() => server.release()) // the refusal
 
     const alert = await screen.findByRole('alert', {}, { timeout: 2000 })
-    expect(server.patches()).toHaveLength(2) // the refused one
+    expect(server.patches()).toHaveLength(2)
     expect(alert).toHaveTextContent('changed since you loaded them (now 30h)')
     expect(alert).toHaveTextContent('your attempt may have been stored before that')
     expect(alert).not.toHaveTextContent('may or may not hold it')
@@ -692,15 +702,14 @@ describe('when a load settles a save whose attempt was unknown', () => {
   })
 
   it('calls the save done when a load showed our value before a refused attempt', async () => {
-    retryTiming.delay = () => 300
-    const server = fakeServer(['lose-request', 'refuse'])
+    const server = fakeServer(['lose-request', 'hold-then-refuse'])
     const { rerender } = renderGrid()
     await edit('Dee Okafor', '50')
-    await waitFor(() => expect(server.patches()).toHaveLength(1))
+    await waitFor(() => expect(server.patches()).toHaveLength(2))
     server.changeElsewhere(4, 50)
     nextRange(rerender)
     await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/))
-    await waitFor(() => expect(server.patches()).toHaveLength(2)) // the refused one
+    act(() => server.release()) // the refusal
     // Like a 412 showing our value: done, the editor closes.
     await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
   })
@@ -938,19 +947,14 @@ describe('a load sent while a save is on its way, answered after it', () => {
     const { rerender } = renderGrid()
     await edit('Dee Okafor', '50')
     await waitFor(() => expect(server.patches()).toHaveLength(1))
-    const original = vi.mocked(fetch).getMockImplementation()!
-    let releaseLoad: () => void = () => {}
-    vi.mocked(fetch).mockImplementation(async (url, init) => {
-      if (init?.method !== 'PATCH') await new Promise<void>((resolve) => (releaseLoad = resolve))
-      return original(url, init)
-    })
+    const releaseLoad = holdLoads({ readNow: false })
     nextRange(rerender)
     await waitFor(() => expect(loads()).toBe(2))
     act(() => server.release())
     await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
     expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/)
     server.changeElsewhere(4, 60)
-    act(() => releaseLoad())
+    await releaseLoad()
     await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^60h$/))
   })
 })
@@ -1087,6 +1091,106 @@ describe('a load and a save placed against each other through the hook', () => {
     await releaseLoad()
     expect(capButton('Dee Okafor')).toHaveTextContent(/^70h$/)
     expect(screen.getByRole('alert')).toHaveTextContent('(now 70h)')
+  })
+
+  it("ignores a late 412's row once a load showed it and a later load a newer one", async () => {
+    // The 412 read v2/60 early, its answer slow; a load showed v2, another
+    // manager saved 70 (v3), and a load sent after v2 was known showed it.
+    const server = fakeServer(['check-then-hold'])
+    const { rerender } = renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    server.changeElsewhere(4, 60)
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(server.patches()).toHaveLength(1))
+    nextRange(rerender)
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^60h$/))
+    server.changeElsewhere(4, 70)
+    thirdRange(rerender)
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^70h$/))
+    act(() => server.release())
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('(now 70h)'))
+    expect(capButton('Dee Okafor')).toHaveTextContent(/^70h$/)
+    expect(loads()).toBe(3) // decided without loading again
+  })
+
+  it('places a 412 against when a load arrived, not when it was sent', async () => {
+    // A load is on its way; our save is sent after it and its 412 reads v2/60
+    // at once (answer slow). Another manager saves 70 (v3), the load reads it.
+    // The 412 was sent before the load's answer: its row can't be placed.
+    const server = fakeServer(['check-then-hold'])
+    const { rerender } = renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    server.changeElsewhere(4, 60)
+    const releaseLoad = holdLoads({ readNow: false })
+    nextRange(rerender)
+    await waitFor(() => expect(loads()).toBe(2))
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(server.patches()).toHaveLength(1))
+    server.changeElsewhere(4, 70)
+    await releaseLoad()
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^70h$/))
+    act(() => server.release())
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('(now 70h)'))
+    await waitFor(() => expect(loads()).toBe(3))
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^70h$/))
+  })
+
+  it("loads the row again when a late 412 can't be placed, instead of showing it as certain", async () => {
+    // Attempt 1 stored v2/50, its answer lost; the repeat's 412 read v2/50,
+    // its answer slow. Another manager saved 70 (v3) and a load showed it.
+    const server = fakeServer(['store-and-lose-answer', 'check-then-hold'])
+    const { rerender } = renderGrid()
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(server.patches()).toHaveLength(2))
+    server.changeElsewhere(4, 70)
+    nextRange(rerender)
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^70h$/))
+    act(() => server.release())
+    // Our value was on the server: the save is done.
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    await waitFor(() => expect(loads()).toBe(3))
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^70h$/))
+    expect(capButton('Dee Okafor')).not.toHaveTextContent('?')
+  })
+
+  it('loads the row again after two saves while a load was on its way, and shows the newer row', async () => {
+    const server = fakeServer(['store', 'store'])
+    const { rerender } = renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    const releaseLoad = holdLoads({ readNow: false })
+    nextRange(rerender)
+    await waitFor(() => expect(loads()).toBe(2))
+    await edit('Dee Okafor', '45')
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    server.changeElsewhere(4, 60)
+    await releaseLoad()
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^60h$/))
+    expect(capButton('Dee Okafor')).not.toHaveTextContent('?')
+    expect(loads()).toBe(3)
+  })
+
+  it('marks the row with "?" while it is loaded again, and keeps it if that load fails', async () => {
+    const server = fakeServer(['store', 'store'])
+    const { rerender } = renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    const releaseLoad = holdLoads({ readNow: false })
+    nextRange(rerender)
+    await waitFor(() => expect(loads()).toBe(2))
+    await edit('Dee Okafor', '45')
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    server.changeElsewhere(4, 60)
+    failLoads(1)
+    await releaseLoad()
+    await screen.findByRole('alert')
+    expect(capButton('Dee Okafor')).toHaveTextContent(/^50h \?$/)
+    expect(capButton('Dee Okafor')).toHaveAccessibleName(/may not be the latest, loading again/)
+    expect(capButton('Dee Okafor')).toHaveAttribute('title', expect.stringContaining('server may hold a newer value'))
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^60h$/))
   })
 
   it("places a load against a 412's row, not against an earlier stored save", async () => {
@@ -1238,7 +1342,9 @@ describe('the editor while it saves again', () => {
 // Round 13.
 describe("a 412 that arrives after a load showed a newer row", () => {
   // Held behind another manager's 60 (shown by a load), then they saved 50:
-  // the 412 carries 50. The grid and the editor must settle on that same row.
+  // the 412 carries 50, read some time after our save was sent, so it can't be
+  // placed against the load's 60. The grid loads the row again and settles on
+  // what the server holds; the editor reads the 412's row.
   it('closes as done and shows the row the 412 carried, when it holds our value', async () => {
     const server = fakeServer(['hold-then-check'])
     const { rerender } = renderGrid()
@@ -1251,10 +1357,11 @@ describe("a 412 that arrives after a load showed a newer row", () => {
     act(() => server.release())
 
     await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
-    expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/)
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/))
+    expect(capButton('Dee Okafor')).not.toHaveTextContent('?')
   })
 
-  it('names the row the 412 carried, and saving again stores', async () => {
+  it('names the row the server holds, and saving again stores', async () => {
     const server = fakeServer(['hold-then-check'])
     const { rerender } = renderGrid()
     await edit('Dee Okafor', '50')
@@ -1265,7 +1372,7 @@ describe("a 412 that arrives after a load showed a newer row", () => {
     server.changeElsewhere(4, 70)
     act(() => server.release())
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('(now 70h)')
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('(now 70h)'))
     expect(capButton('Dee Okafor')).toHaveTextContent(/^70h$/)
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     await waitFor(() => expect(server.hours[4]).toBe(50))
@@ -1451,20 +1558,23 @@ function failLoads(times: number) {
   })
 }
 
-// Holds the loads sent from now on until released. Each reads the server when
-// it is sent (`readNow`) or only when released.
+// Holds the next load until released. It reads the server when it is sent
+// (`readNow`) or only when released. Later loads (such as the grid loading the
+// range again) are answered at once.
 function holdLoads({ readNow }: { readNow: boolean }) {
   const original = vi.mocked(fetch).getMockImplementation()!
-  const waiting: (() => void)[] = []
+  let held = false
+  let releaseLoad: () => void = () => {}
   vi.mocked(fetch).mockImplementation(async (url, init) => {
-    if (init?.method === 'PATCH') return original(url, init)
+    if (init?.method === 'PATCH' || held) return original(url, init)
+    held = true
     const read = readNow ? original(url, init) : null
-    await new Promise<void>((resolve) => waiting.push(resolve))
+    await new Promise<void>((resolve) => (releaseLoad = resolve))
     return read ?? original(url, init)
   })
   return async () => {
     await act(async () => {
-      waiting.splice(0).forEach((release) => release())
+      releaseLoad()
       await new Promise((r) => setTimeout(r, 50))
     })
   }

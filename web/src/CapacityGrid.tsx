@@ -358,7 +358,7 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
                         className="cap-button"
                         aria-label={
                           `Weekly hours for ${row.name}: ${capacity.text}` +
-                          (capacity.certain ? '' : ', last save not confirmed') +
+                          (capacity.doubt ? `, ${capacity.doubt}` : '') +
                           '. Edit'
                         }
                         title={capacity.note ?? undefined}

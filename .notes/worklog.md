@@ -232,3 +232,10 @@ left unfinished. Append as you go; a line or two per entry is right.
 
 - Round 16's `seenAt` was set again by a save's answer that only re-showed the row a load had shown, and a 412 like that set `confirmedAt` (older). Both made a later load look sent before the row was known, so its newer row was kept off the grid. Such an answer now changes nothing, and a load re-showing a version leaves its `seenAt`: a version is known from the first time it was shown.
 - Considered a redesign into explicit read intervals; it came out as the existing rules plus this one, so the change removes the re-stamping rather than adding a model.
+
+## Review round 18 → the ordering redesigned: decide what the facts decide, read again otherwise
+
+- Seventh round with a High in the ordering of late answers. Each fix had been a special case on a stand-in (an attempt's send time, a stored save, a 412 that "always wins"), and each round found the next edge.
+- Now every answer carries when it was sent and when it arrived. A row is newer when it was sent after the shown version was first known; older when its version is known to come before the shown one; otherwise its order can't be told. That last case used to be decided anyway, as certain. Now the grid keeps the row shown, marks it "?" and loads the range again, which is newer than both.
+- Mutation found one branch of the new rule redundant (our save written over the shown version is already covered by the time rule) and it was removed.
+- The save loop now checks the row after each wait, so no attempt is sent once a load has shown a new version.

@@ -30,9 +30,11 @@ export function formatHours(hours: number): string {
  * How sure the grid can be about a person's capacity:
  *  - 'certain':  the last value the server confirmed or loaded;
  *  - 'retrying': a save of ours got no definite answer and is being sent again;
- *  - 'unknown':  we stopped sending it without a definite answer.
+ *  - 'unknown':  we stopped sending it without a definite answer;
+ *  - 'checking': two answers came whose order can't be told, so the grid is
+ *    loading the row again (see `place`).
  */
-export type Certainty = 'certain' | 'retrying' | 'unknown'
+export type Certainty = 'certain' | 'retrying' | 'unknown' | 'checking'
 
 /**
  * How to show a person's capacity, and how sure we are about it. Every place
@@ -47,22 +49,31 @@ export type CapacityView = {
   certain: boolean
   /** Shown wherever the value is shown, when it isn't certain. */
   note: string | null
+  /** The same in a few words, for names and tooltips: "last save not confirmed". */
+  doubt: string | null
 }
 
 const NOTES: Record<Exclude<Certainty, 'certain'>, string> = {
   retrying: 'The last save got no answer yet. Sending it again until the server answers…',
   unknown:
     "The last save couldn't be confirmed, so the server may hold a different value. Saving again is safe and confirms it.",
+  checking: 'Answers came in an order that can’t be told apart, so the server may hold a newer value. Loading it again…',
+}
+
+const DOUBTS: Record<Exclude<Certainty, 'certain'>, string> = {
+  retrying: 'last save not confirmed',
+  unknown: 'last save not confirmed',
+  checking: 'may not be the latest, loading again',
 }
 
 export function capacityView(weeklyHours: number, certainty: Certainty): CapacityView {
   const text = `${formatHours(weeklyHours)}h`
-  if (certainty === 'certain') return { text, certain: true, note: null }
-  return { text, certain: false, note: NOTES[certainty] }
+  if (certainty === 'certain') return { text, certain: true, note: null, doubt: null }
+  return { text, certain: false, note: NOTES[certainty], doubt: DOUBTS[certainty] }
 }
 
-export function certaintyOf(state: Pick<State, 'unsure'>, id: number): Certainty {
-  return state.unsure[id]?.state ?? 'certain'
+export function certaintyOf(state: Pick<State, 'unsure' | 'checking'>, id: number): Certainty {
+  return state.unsure[id]?.state ?? (id in state.checking ? 'checking' : 'certain')
 }
 
 export function allocationStatus(allocated: number, capacity: number): Status {
@@ -99,35 +110,29 @@ export type State = {
   error: string | null
   /** The last range that loaded. Kept on screen while the next one loads or fails. */
   data: Loaded | null
-  people: Record<number, { name: string; weeklyHours: number; version: string }>
-  /** When each person's latest save was confirmed, on the same clock as `issuedAt`. */
-  confirmedAt: Record<number, number>
-  /**
-   * When each person's shown version first became known, on the same clock:
-   * the `issuedAt` of the load that first showed it, or the `confirmedAt` of
-   * the save answer that did. A load sent after that reads the row at that
-   * version or a newer one. (A load is applied only if no later one was sent
-   * before its answer.) Seeing the same version again changes nothing: it is
-   * not news, and moving the time later would place later loads before it.
-   */
-  seenAt: Record<number, number>
-  /** The save `confirmedAt` refers to, when the server stored it (200): the
-   * version it was sent on (If-Match), when that version became known
-   * (`seenAt`), and the version it produced. A 412 clears it: its row can't
-   * be placed against a load. */
-  stored: Record<number, { onSeenAt: number; sentOn: string; version: string }>
+  /** Each person's row as shown: the newest the grid can prove (see `place`). */
+  people: Record<number, Row>
+  /** When the shown version first became known: the tick its first answer arrived. */
+  knownAt: Record<number, number>
+  /** Versions known to come before the shown one. */
+  older: Record<number, string[]>
+  /** People whose shown row may be older than an answer that couldn't be
+   * placed, with the tick that answer arrived; until a later request settles it. */
+  checking: Record<number, number>
+  /** Counts answers that couldn't be placed: each asks for the range again. */
+  recheck: number
   unsure: Record<number, Unsure>
 }
 
+type Row = { name: string; weeklyHours: number; version: string }
+
 export type Action =
   | { type: 'fetchStarted'; key: string; issuedAt: number }
-  | { type: 'fetchSucceeded'; key: string; issuedAt: number; response: CapacityResponse }
+  | { type: 'fetchSucceeded'; key: string; issuedAt: number; receivedAt: number; response: CapacityResponse }
   | { type: 'fetchFailed'; key: string; issuedAt: number; error: string }
-  /** The server's row after a save: what it stored (200, with the version
-   * it was sent on), or what it holds now (412). Applied, except a stored row
-   * that a load has already shown superseded, and a row already shown, which
-   * is not news (see the reducer). */
-  | { type: 'saveConfirmed'; person: Person; sent?: { on: string; seenAt: number }; confirmedAt: number }
+  /** The server's row in answer to a save sent on `sentOn` (If-Match): what
+   * it stored (200), or what it holds (412). Placed like any answer. */
+  | { type: 'saveAnswered'; person: Person; stored: boolean; sentOn: string; sentAt: number; receivedAt: number }
   | { type: 'saveRetrying'; id: number; version: string; value: number }
   | { type: 'saveGaveUp'; id: number; version: string; value: number }
 
@@ -138,9 +143,10 @@ export const initialState: State = {
   error: null,
   data: null,
   people: {},
-  confirmedAt: {},
-  seenAt: {},
-  stored: {},
+  knownAt: {},
+  older: {},
+  checking: {},
+  recheck: 0,
   unsure: {},
 }
 
@@ -152,6 +158,61 @@ export function rangeKey(from: ISODate, to: ISODate): string {
   return `${from}..${to}`
 }
 
+/**
+ * An answer carrying a person's row: sent at `sentAt`, arrived at `receivedAt`
+ * (one clock for loads and saves), so the server read the row in between.
+ * `over`: for a stored save, the version it was written over (If-Match), which
+ * ours directly follows.
+ */
+type Answer = { row: Row; sentAt: number; receivedAt: number; over?: string }
+
+/**
+ * Where an answer's row stands against the row shown. Versions never repeat
+ * and the server's history is one line, so:
+ *  - newer, when it was sent after the shown version first became known: the
+ *    server already held that version, and read later. (This covers our save
+ *    written over the shown version: it was sent on a version already known.)
+ *  - older, when its version is one known to come before the shown one, or it
+ *    is our save written over such a version (then the shown row came after
+ *    ours: it is neither ours nor the one ours followed);
+ *  - unknown otherwise. Nothing else can tell, so the row shown stays, marked,
+ *    and the range is loaded again: a load sent now is newer than both.
+ */
+function place(state: State, id: number, a: Answer): 'new' | 'same' | 'newer' | 'older' | 'unknown' {
+  const shown = state.people[id]
+  if (shown === undefined) return 'new'
+  if (a.row.version === shown.version) return 'same'
+  const older = state.older[id] ?? []
+  if (older.includes(a.row.version)) return 'older'
+  if (a.over !== undefined && older.includes(a.over)) return 'older'
+  if (a.sentAt > state.knownAt[id]) return 'newer'
+  return 'unknown'
+}
+
+/** The state after one answer about one person. */
+function answered(state: State, id: number, a: Answer): State {
+  const where = place(state, id, a)
+  // A request sent after the unplaceable answer arrived read the row after it
+  // and after the row shown: a newer or the same row settles the question.
+  const settles = (where === 'same' || where === 'newer' || where === 'new') && a.sentAt > (state.checking[id] ?? Infinity)
+  const checking = settles ? without(state.checking, id) : state.checking
+  if (where === 'same' || where === 'older') return { ...state, checking }
+  if (where === 'unknown') {
+    return { ...state, checking: { ...state.checking, [id]: a.receivedAt }, recheck: state.recheck + 1 }
+  }
+  const shown = state.people[id]
+  // (A stored save's `over` is the row shown or already among the older: it
+  // was the row shown when the save was sent.)
+  const before = [...(state.older[id] ?? []), ...(shown ? [shown.version] : [])]
+  return {
+    ...state,
+    checking,
+    people: { ...state.people, [id]: a.row },
+    knownAt: { ...state.knownAt, [id]: a.receivedAt },
+    older: { ...state.older, [id]: [...new Set(before)] },
+  }
+}
+
 export function capacityReducer(state: State, action: Action): State {
   switch (action.type) {
     case 'fetchStarted':
@@ -161,35 +222,20 @@ export function capacityReducer(state: State, action: Action): State {
       // Matching the request, not just the range: after A → B → A, the first
       // request for A is as stale as the one for B.
       if (action.issuedAt !== state.requestedAt) return state
-      const people = { ...state.people }
-      const seenAt = { ...state.seenAt }
+      let next = state
       for (const p of action.response.people) {
-        // A load that was sent before a save was confirmed can carry the old
-        // weekly hours: the confirmed save is newer, so it wins. Unless the
-        // load was sent after the version our stored save was written over
-        // became known, and shows a third version (neither that one nor ours):
-        // it read the row at that version or later, so after ours. (A load
-        // sent before that can't tell: it may show an older version.)
-        const confirmed = state.confirmedAt[p.id]
-        const s = state.stored[p.id]
-        const superseded =
-          s !== undefined && action.issuedAt > s.onSeenAt && p.version !== s.sentOn && p.version !== s.version
-        const keepLocal = confirmed !== undefined && confirmed > action.issuedAt && p.id in people && !superseded
-        if (keepLocal) continue
-        if (people[p.id]?.version !== p.version) seenAt[p.id] = action.issuedAt
-        people[p.id] = { name: p.name, weeklyHours: p.weeklyHours, version: p.version }
+        const row = { name: p.name, weeklyHours: p.weeklyHours, version: p.version }
+        next = answered(next, p.id, { row, sentAt: action.issuedAt, receivedAt: action.receivedAt })
       }
       // A row seen at another version than a doubtful save was sent on: that
       // save can no longer land, so the doubt is over.
       const unsure = Object.fromEntries(
-        Object.entries(state.unsure).filter(([id, u]) => people[Number(id)]?.version === u.version),
+        Object.entries(next.unsure).filter(([id, u]) => next.people[Number(id)]?.version === u.version),
       )
       return {
-        ...state,
+        ...next,
         loading: false,
         error: null,
-        people,
-        seenAt,
         unsure,
         data: {
           key: action.key,
@@ -205,30 +251,17 @@ export function capacityReducer(state: State, action: Action): State {
       if (action.issuedAt !== state.requestedAt) return state
       return { ...state, loading: false, error: action.error }
 
-    case 'saveConfirmed': {
+    case 'saveAnswered': {
       const { id, name, weeklyHours, version } = action.person
-      // A stored row (200), where a load already showed a third version:
-      // neither the one the save was sent on (If-Match) nor ours. Ours was
-      // written over the version sent on, so the shown row came after it and
-      // stays. A 412's row is always applied (or already shown): when it was
-      // read can't be placed against a load, and the save loop settles on that
-      // same row, so the grid and the editor never decide on different rows.
-      const shown = state.people[id]?.version
-      if (action.sent !== undefined && shown !== undefined && shown !== action.sent.on && shown !== version) return state
-      // The row is already shown (a load showed it first): the answer is not
-      // news. Taking it as a new confirmation would place loads sent after
-      // that load before it, and keep this row over the newer rows they show.
-      if (shown === version) return state
-      return {
-        ...state,
-        people: { ...state.people, [id]: { name, weeklyHours, version } },
-        confirmedAt: { ...state.confirmedAt, [id]: action.confirmedAt },
-        seenAt: { ...state.seenAt, [id]: action.confirmedAt },
-        stored: action.sent
-          ? { ...state.stored, [id]: { onSeenAt: action.sent.seenAt, sentOn: action.sent.on, version } }
-          : without(state.stored, id),
-        unsure: without(state.unsure, id),
-      }
+      const next = answered(state, id, {
+        row: { name, weeklyHours, version },
+        sentAt: action.sentAt,
+        receivedAt: action.receivedAt,
+        over: action.stored ? action.sentOn : undefined,
+      })
+      // Either answer says the server is past the version the save was sent
+      // on (it wrote over it, or holds another): no save on it can land now.
+      return next.unsure[id]?.version === action.sentOn ? { ...next, unsure: without(next.unsure, id) } : next
     }
 
     case 'saveRetrying':

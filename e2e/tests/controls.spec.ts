@@ -13,6 +13,18 @@ test('Previous week moves back one week', async ({ page }) => {
   await expect(page).toHaveURL(/from=2025-12-22&to=2026-01-11/)
 })
 
+// The range is mirrored to the URL without adding history entries: the grid
+// has no handler for Back, so Back must leave the page, not leave the URL on
+// a range the grid doesn't show.
+test('moving through weeks keeps one history entry', async ({ page }) => {
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  const entries = await page.evaluate(() => history.length)
+  await page.getByRole('button', { name: 'Next week' }).click()
+  await page.getByRole('button', { name: 'Next week' }).click()
+  await expect(page).toHaveURL(/from=2026-01-12&to=2026-02-01/)
+  expect(await page.evaluate(() => history.length)).toBe(entries)
+})
+
 test('This week jumps to the current week and keeps the number of weeks', async ({ page }) => {
   await page.clock.setFixedTime(new Date('2026-10-09T12:00:00'))
   await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)

@@ -31,7 +31,7 @@ export type SaveResult =
 export function useCapacity(from: ISODate, to: ISODate) {
   const [state, dispatch] = useReducer(capacityReducer, initialState)
   const [attempt, setAttempt] = useState(0)
-  // Orders loads and saves against each other: see confirmedAt in capacityState.
+  // Orders loads and saves against each other: see `place` in capacityState.
   const clock = useRef(0)
   const mounted = useRef(true)
   // Read by the save loop, which outlives the render it started in.
@@ -39,8 +39,6 @@ export function useCapacity(from: ISODate, to: ISODate) {
   unsure.current = state.unsure
   const people = useRef(state.people)
   people.current = state.people
-  const seenAt = useRef(state.seenAt)
-  seenAt.current = state.seenAt
   useEffect(() => {
     mounted.current = true
     return () => {
@@ -54,7 +52,7 @@ export function useCapacity(from: ISODate, to: ISODate) {
     const issuedAt = ++clock.current
     dispatch({ type: 'fetchStarted', key, issuedAt })
     fetchCapacity(from, to, controller.signal).then(
-      (response) => dispatch({ type: 'fetchSucceeded', key, issuedAt, response }),
+      (response) => dispatch({ type: 'fetchSucceeded', key, issuedAt, receivedAt: ++clock.current, response }),
       (err: unknown) => {
         if (controller.signal.aborted) return
         dispatch({ type: 'fetchFailed', key, issuedAt, error: err instanceof Error ? err.message : String(err) })
@@ -62,7 +60,9 @@ export function useCapacity(from: ISODate, to: ISODate) {
     )
     // A newer range supersedes this one: stop waiting for it.
     return () => controller.abort()
-  }, [from, to, attempt])
+    // `recheck`: an answer couldn't be placed against the row shown; a load
+    // sent now reads the row after both.
+  }, [from, to, attempt, state.recheck])
 
   const retry = useCallback(() => setAttempt((n) => n + 1), [])
 
@@ -80,11 +80,10 @@ export function useCapacity(from: ISODate, to: ISODate) {
    */
   const saveWeeklyHours = useCallback(
     async (id: number, weeklyHours: number, version: string): Promise<SaveResult> => {
-      // The server's row is fresh, whether a save stored it (200, with the
-      // version it was sent on and when that version became known) or the
-      // server sent it back (412): one way to apply it, ordered against loads.
-      const confirmWith = (person: Person, sent?: { on: string; seenAt: number }) =>
-        dispatch({ type: 'saveConfirmed', person, sent, confirmedAt: ++clock.current })
+      // The server's row, whether a save stored it (200) or the server sent it
+      // back (412), placed against the row shown like any answer.
+      const answer = (person: Person, stored: boolean, sentAt: number) =>
+        dispatch({ type: 'saveAnswered', person, stored, sentOn: version, sentAt, receivedAt: ++clock.current })
       // An earlier save of this person, on this same version, whose outcome is
       // unknown: it may be what the server holds by the time we get there.
       const doubt = unsure.current[id]
@@ -99,17 +98,15 @@ export function useCapacity(from: ISODate, to: ISODate) {
       // from: no attempt could land, so none is sent.
       const known = people.current[id]
       if (known && known.version !== version) return settledBy({ id, ...known })
-      // When `version` became known (it is the row's version here). Unknown
-      // only for a row the grid doesn't hold: then no earlier load is placed.
-      const sent = { on: version, seenAt: seenAt.current[id] ?? clock.current }
       try {
         for (let attempt = 1; ; attempt++) {
+          const sentAt = ++clock.current
           try {
-            confirmWith(await updateWeeklyHours(id, weeklyHours, version), sent)
+            answer(await updateWeeklyHours(id, weeklyHours, version), true, sentAt)
             return { ok: true }
           } catch (error) {
             if (error instanceof ApiError && error.current) {
-              confirmWith(error.current)
+              answer(error.current, false, sentAt)
               return settledBy(error.current)
             }
             const definite = isDefiniteFailure(error)
@@ -124,6 +121,10 @@ export function useCapacity(from: ISODate, to: ISODate) {
             }
             dispatch({ type: 'saveRetrying', id, version, value: weeklyHours })
             await new Promise((r) => setTimeout(r, retryTiming.delay(attempt)))
+            // A load during the wait may have shown the row at another version:
+            // the next attempt couldn't land.
+            const shown = people.current[id]
+            if (shown && shown.version !== version) return settledBy({ id, ...shown })
           }
         }
       } catch (unexpected) {
