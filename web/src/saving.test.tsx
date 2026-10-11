@@ -126,6 +126,10 @@ async function edit(name: string, value: string) {
   fireEvent.submit(input.closest('form')!)
 }
 
+// The editor's own message when it isn't an error (role=status; the toolbar
+// has another status, the loading text).
+const editorStatus = () => within(screen.getByRole('form', { name: /Edit weekly hours/ })).getByRole('status')
+
 const nextRange = (rerender: (ui: ReactElement) => void) =>
   rerender(<CapacityGrid from="2026-01-12" to="2026-01-25" onRangeChange={() => {}} />)
 
@@ -561,7 +565,7 @@ describe('after an earlier save of the person was left unconfirmed', () => {
     await screen.findByText(/Couldn't confirm the save of 50h/)
     await edit('Dee Okafor', '26')
     const alert = await screen.findByText(/Not saved. could not update person/)
-    expect(alert).toHaveTextContent('Your earlier save of 50h is still unconfirmed.')
+    expect(alert).toHaveTextContent('could not update person. Your earlier save of 50h is still unconfirmed.')
     expect(alert).not.toHaveTextContent('may or may not')
     expect(capButton('Dee Okafor')).toHaveTextContent('40h ?')
   })
@@ -837,9 +841,9 @@ describe("the editor's message after the save has ended", () => {
     nextRange(rerender)
 
     await waitFor(() =>
-      expect(screen.getByRole('alert')).toHaveTextContent('The weekly hours on the server are 50h now, the value you entered.'),
+      expect(editorStatus()).toHaveTextContent('The weekly hours on the server are 50h now, the value you entered.'),
     )
-    expect(screen.getByRole('alert')).not.toHaveTextContent('went through')
+    expect(editorStatus()).not.toHaveTextContent('went through')
     expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument()
     expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/)
   })
@@ -982,7 +986,7 @@ describe('saving again after the message named a newer row', () => {
     await screen.findByText(/Couldn't confirm the save of 50h/)
     server.changeElsewhere(4, 50)
     nextRange(rerender)
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('the value you entered'))
+    await waitFor(() => expect(editorStatus()).toHaveTextContent('the value you entered'))
 
     await edit('Dee Okafor', '55')
     await waitFor(() => expect(server.hours[4]).toBe(55))
@@ -1073,10 +1077,14 @@ describe('when the server ends up holding the typed value after a definite failu
     server.changeElsewhere(4, 50)
     nextRange(rerender)
     await waitFor(() =>
-      expect(screen.getByRole('alert')).toHaveTextContent('The weekly hours on the server are 50h now, the value you entered.'),
+      expect(editorStatus()).toHaveTextContent('The weekly hours on the server are 50h now, the value you entered.'),
     )
-    expect(screen.getByRole('alert')).not.toHaveTextContent('Not saved')
+    expect(editorStatus()).not.toHaveTextContent('Not saved')
     expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument()
+    // Information, not an error: the draft is what the server holds.
+    expect(editorStatus()).not.toHaveClass('error')
+    expect(screen.getByLabelText('Weekly hours for Dee Okafor')).toHaveAttribute('aria-invalid', 'false')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('says so after a conflict, too', async () => {
@@ -1088,7 +1096,7 @@ describe('when the server ends up holding the typed value after a definite failu
     await screen.findByText(/now 60h/, { selector: '[role=alert]' })
     server.changeElsewhere(4, 50)
     nextRange(rerender)
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('50h now, the value you entered'))
+    await waitFor(() => expect(editorStatus()).toHaveTextContent('50h now, the value you entered'))
   })
 })
 
@@ -1106,8 +1114,8 @@ describe('after something unexpected ends a save that may have been stored', () 
     nextRange(rerender)
     await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/))
     expect(server.hours[4]).toBe(50)
-    expect(screen.getByRole('alert')).toHaveTextContent('50h now, the value you entered')
-    expect(screen.getByRole('alert')).not.toHaveTextContent('Not saved')
+    expect(editorStatus()).toHaveTextContent('50h now, the value you entered')
+    expect(editorStatus()).not.toHaveTextContent('Not saved')
   })
 })
 
@@ -1151,6 +1159,177 @@ describe('earlier doubtful saves in the messages', () => {
     await edit('Dee Okafor', '26')
     expect(await screen.findByText(/Not saved. could not update person/)).toHaveTextContent(
       'Your earlier save of 50h or 60h is still unconfirmed.',
+    )
+  })
+})
+
+// Round 14.
+describe('a Retry of a doubtful save', () => {
+  // 50 is stored, but every answer is lost; the editor offers Retry. Another
+  // manager then saves 60. The identical Retry meets a 412: our earlier
+  // attempt may well be the one that landed before theirs.
+  it('never says "Not saved" when the row moved on meanwhile', async () => {
+    const server = fakeServer(['store-and-lose-answer', ...Array(SAVE_ATTEMPTS - 1).fill('no-answer')])
+    renderGrid()
+    await edit('Dee Okafor', '50')
+    await screen.findByText(/Couldn't confirm the save of 50h/)
+    server.changeElsewhere(4, 60)
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    const alert = await screen.findByText(/now 60h/, { selector: '[role=alert]' })
+    expect(alert).toHaveTextContent('your attempt may have been stored before that')
+    expect(alert).not.toHaveTextContent('Not saved')
+  })
+
+  it('stays unconfirmed when it is refused outright', async () => {
+    fakeServer(['store-and-lose-answer', ...Array(SAVE_ATTEMPTS - 1).fill('no-answer'), 'refuse'])
+    renderGrid()
+    await edit('Dee Okafor', '50')
+    await screen.findByText(/Couldn't confirm the save of 50h/)
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/could not update person/))
+    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't confirm the save of 50h")
+    expect(screen.getByRole('alert')).not.toHaveTextContent('Not saved')
+  })
+})
+
+describe('saving again after a refusal or an unexpected error that a load then explained', () => {
+  it('stores the value at the first Retry after a refusal', async () => {
+    const server = fakeServer(['refuse'])
+    const { rerender } = renderGrid()
+    await edit('Dee Okafor', '50')
+    await screen.findByText(/Not saved. could not update person/)
+    server.changeElsewhere(4, 30)
+    nextRange(rerender)
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('(now 30h)'))
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(server.hours[4]).toBe(50))
+    expect(server.patches()).toHaveLength(2)
+  })
+
+  it('stores the value at the first Retry after an unexpected error', async () => {
+    const server = fakeServer(['store-and-lose-answer'])
+    retryTiming.delay = () => {
+      throw new Error('boom')
+    }
+    const { rerender } = renderGrid()
+    await edit('Dee Okafor', '50')
+    await screen.findByText(/Something went wrong while saving/)
+    retryTiming.delay = () => 5
+    server.changeElsewhere(4, 30)
+    nextRange(rerender)
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('(now 30h)'))
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(server.hours[4]).toBe(50))
+    expect(server.patches()).toHaveLength(2)
+  })
+})
+
+describe('a save whose grid goes away', () => {
+  it('stops sending once the grid is unmounted', async () => {
+    retryTiming.delay = () => 100
+    const server = fakeServer(Array(SAVE_ATTEMPTS).fill('lose-request'))
+    const { unmount } = renderGrid()
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(server.patches()).toHaveLength(1))
+    unmount()
+    await new Promise((r) => setTimeout(r, 1000))
+    expect(server.patches().length).toBeLessThanOrEqual(2)
+  })
+})
+
+/** Loads fail `times` times (a 502 page), then go through to the fake server. */
+function failLoads(times: number) {
+  const original = vi.mocked(fetch).getMockImplementation()!
+  let left = times
+  vi.mocked(fetch).mockImplementation(async (url, init) => {
+    if (init?.method !== 'PATCH' && left-- > 0) return new Response('<html>Bad Gateway</html>', { status: 502 })
+    return original(url, init)
+  })
+}
+
+const loads = () => vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method !== 'PATCH').length
+
+describe('a failed load', () => {
+  it('loads again at every Retry, not just the first', async () => {
+    fakeServer([])
+    failLoads(2)
+    renderGrid()
+    const banner = await screen.findByText(/Couldn't load/)
+    expect(banner.textContent).not.toMatch(/Error:/)
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(loads()).toBe(2))
+    await screen.findByText(/Couldn't load/)
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+  })
+
+  it('dims the grid while a range loads, and keeps the previous range dimmed when it fails', async () => {
+    fakeServer([])
+    const { container, rerender } = renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    const scroller = () => container.querySelector('.scroller')!
+    expect(scroller()).not.toHaveClass('stale')
+    nextRange(rerender)
+    expect(scroller()).toHaveClass('stale')
+    await waitFor(() => expect(scroller()).not.toHaveClass('stale'))
+
+    failLoads(1)
+    rerender(<CapacityGrid from="2026-01-19" to="2026-02-01" onRangeChange={() => {}} />)
+    await screen.findByText(/still shows the previous range/)
+    expect(scroller()).toHaveClass('stale')
+
+    // Back to the range the grid still shows: while it reloads, it is dimmed
+    // for loading alone.
+    nextRange(rerender)
+    expect(scroller()).toHaveClass('stale')
+    await waitFor(() => expect(scroller()).not.toHaveClass('stale'))
+  })
+})
+
+describe('what the grid marks', () => {
+  it('marks who is over, the weeks with someone over, and the row being edited', async () => {
+    fakeServer([])
+    renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    // Dee: 45 allocated of 40 in the week of 5 Jan; Ana is under everywhere.
+    expect(rowOf('Dee Okafor')).toHaveClass('is-over')
+    expect(rowOf('Ana Ferreira')).not.toHaveClass('is-over')
+    expect(within(screen.getByRole('columnheader', { name: /5 Jan/ })).getByText(/1 over/)).toHaveClass('over-text')
+    expect(within(screen.getByRole('columnheader', { name: /12 Jan/ })).getByText('none over')).not.toHaveClass('over-text')
+    expect(screen.getByText('1', { selector: 'strong' })).toHaveClass('over-text')
+    fireEvent.click(capButton('Dee Okafor'))
+    expect(rowOf('Dee Okafor')).toHaveClass('editing')
+    expect(rowOf('Ana Ferreira')).not.toHaveClass('editing')
+  })
+
+  it('finds people with spaces around the search, and names the trimmed search', async () => {
+    fakeServer([])
+    renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    fireEvent.change(screen.getByLabelText('Find person'), { target: { value: ' okafor ' } })
+    expect(screen.getByText('Dee Okafor', { selector: 'th' })).toBeInTheDocument()
+    expect(screen.queryByText('Ana Ferreira', { selector: 'th' })).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Find person'), { target: { value: 'zz ' } })
+    expect(screen.getByText('Nobody matching “zz”.')).toBeInTheDocument()
+  })
+
+  it('offers the shown number of weeks once, adding it only when it is not a preset', async () => {
+    fakeServer([])
+    const { rerender } = renderGrid() // 2 weeks
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    expect(screen.getByRole('option', { name: '2 weeks' })).toBeInTheDocument()
+    rerender(<CapacityGrid from="2026-01-05" to="2026-03-01" onRangeChange={() => {}} />) // 8 weeks
+    await waitFor(() => expect(screen.getAllByRole('option', { name: '8 weeks' })).toHaveLength(1))
+  })
+
+  it('names the editor and ties its hint to the input', async () => {
+    fakeServer([])
+    renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    fireEvent.click(capButton('Dee Okafor'))
+    expect(screen.getByRole('form', { name: 'Edit weekly hours for Dee Okafor' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Weekly hours for Dee Okafor')).toHaveAccessibleDescription(
+      'Changes capacity for every week, past and future.',
     )
   })
 })

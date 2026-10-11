@@ -1,7 +1,7 @@
 # Next steps: resuming the review cycle
 
-Last completed: **review round 13** (all of its findings fixed, committed and
-pushed). Next: **round 14**: run the two reviewers with the briefs below,
+Last completed: **review round 14** (all of its findings fixed, committed and
+pushed). Next: **round 15**: run the two reviewers with the briefs below,
 updated to HEAD and to the last round's changes.
 
 ## Where things are
@@ -14,7 +14,7 @@ updated to HEAD and to the last round's changes.
 | Register | `.notes/review-register.md`: every finding with a verdict, plus the Recurrence table. |
 | Narrative | `.notes/worklog.md` (append only), `CONTINUED.md`, `SCAFFOLD-FINDINGS.md`. |
 
-Findings per round: 23 → 18 → 14 → 9 → 23 → 13 → 6 → 14 → 9 → 16 → 9 → 11 → 8. Round 5's rise
+Findings per round: 23 → 18 → 14 → 9 → 23 → 13 → 6 → 14 → 9 → 16 → 9 → 11 → 8 → 9. Round 5's rise
 taught the counting rule below; since then the design has been simplified, not
 grown.
 
@@ -38,6 +38,7 @@ grown.
 - **Every test that writes a person restores it** in `t.Cleanup`.
 - **Any `go test` that can hang gets `-timeout`.** Never kill a container mid-test: that once committed an abandoned UPDATE.
 - **Chain doc updates and the commit with `&&`, and check the register before committing.** In round 13 a doc script failed on a quoting error, the commit ran anyway on the next line, and the register update missed the commit.
+- **`pgrep -f`/`pkill -f` patterns match the shell running them**: in round 14 a cleanup `pgrep -f` killed its own shell. Match on something only the target has, or check the PIDs before killing.
 - **Make checks print their result.** A silent `test -z "$(gofmt -l .)" &&` guard once skipped the whole Go suite without saying so.
 - **Never edit** `DECISIONS.md` (owner's text), `db/`, `docker-compose.yml`, the Dockerfiles or the `Makefile`.
 

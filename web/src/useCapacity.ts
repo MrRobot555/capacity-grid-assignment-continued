@@ -14,8 +14,9 @@ export const retryTiming = { delay: (attempt: number) => 1000 * 2 ** (attempt - 
  * only what *that request* did, so it can't settle the save. Only a 200, or
  * the row seen at another version (a 412, or a load), can.
  *  - ok: stored (or the row was seen holding our value);
- *  - changed: the server holds another value now (`changed`, already applied),
- *    known from a 412 or from a load that showed the row at a new version.
+ *  - changed: the server holds another value now (already applied: the
+ *    editor reads it from the grid's row), known from a 412 or from a load
+ *    that showed the row at a new version.
  *    `uncertain`: an attempt of this save may have been stored before that.
  *    `earlier`: values of earlier, still-doubtful saves of this person on the
  *    same version, one of which may be what the server now holds;
@@ -24,7 +25,7 @@ export const retryTiming = { delay: (attempt: number) => 1000 * 2 ** (attempt - 
  */
 export type SaveResult =
   | { ok: true }
-  | { ok: false; changed: Person; uncertain: boolean; earlier?: number[] }
+  | { ok: false; changed: true; uncertain: boolean; earlier?: number[] }
   | { ok: false; error: unknown; unconfirmed: boolean }
 
 export function useCapacity(from: ISODate, to: ISODate) {
@@ -77,20 +78,21 @@ export function useCapacity(from: ISODate, to: ISODate) {
    */
   const saveWeeklyHours = useCallback(
     async (id: number, weeklyHours: number, version: string): Promise<SaveResult> => {
-      // The server's row is fresh, whether a save stored it (200, sent on
-      // `sentOn`) or the server sent it back (412): one way to apply it,
-      // ordered against loads.
-      const confirmWith = (person: Person, sentOn?: string) =>
-        dispatch({ type: 'saveConfirmed', person, sentOn, confirmedAt: ++clock.current })
+      // The server's row is fresh, whether a save stored it (200, with when
+      // and on which version it was sent) or the server sent it back (412):
+      // one way to apply it, ordered against loads.
+      const confirmWith = (person: Person, sent?: { on: string; at: number }) =>
+        dispatch({ type: 'saveConfirmed', person, sent, confirmedAt: ++clock.current })
       // An earlier save of this person, on this same version, whose outcome is
       // unknown: it may be what the server holds by the time we get there.
       const doubt = unsure.current[id]
       const earlier = doubt?.version === version ? doubt.values : undefined
-      // Whether an attempt of *this* save has had an unknown outcome.
-      let uncertain = false
+      // Whether an attempt of this save may have landed: one of its own with an
+      // unknown outcome, or an earlier identical save (a Retry) still in doubt.
+      let uncertain = earlier?.includes(weeklyHours) ?? false
       // The one reading of a row seen at another version, however it was seen.
       const settledBy = (row: Person): SaveResult =>
-        row.weeklyHours === weeklyHours ? { ok: true } : { ok: false, changed: row, uncertain, earlier }
+        row.weeklyHours === weeklyHours ? { ok: true } : { ok: false, changed: true, uncertain, earlier }
       // The row is already known to be past the version the draft started
       // from: no attempt could land, so none is sent.
       const known = people.current[id]
@@ -98,7 +100,8 @@ export function useCapacity(from: ISODate, to: ISODate) {
       try {
         for (let attempt = 1; ; attempt++) {
           try {
-            confirmWith(await updateWeeklyHours(id, weeklyHours, version), version)
+            const at = ++clock.current
+            confirmWith(await updateWeeklyHours(id, weeklyHours, version), { on: version, at })
             return { ok: true }
           } catch (error) {
             if (error instanceof ApiError && error.current) {

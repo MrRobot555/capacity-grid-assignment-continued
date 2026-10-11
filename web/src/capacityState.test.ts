@@ -134,7 +134,7 @@ describe('capacityReducer', () => {
     const state = run(
       { type: 'fetchStarted', key: 'A', issuedAt: 1 },
       { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) },
-      { type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 50, version: 'v2' }, sentOn: 'v1', confirmedAt: 2 },
+      { type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 50, version: 'v2' }, sent: { on: 'v1', at: 0 }, confirmedAt: 2 },
     )
     expect(state.people[4].weeklyHours).toBe(50)
     expect(state.data?.rows.find((r) => r.id === 4)?.allocated).toEqual([45, 40])
@@ -147,7 +147,7 @@ describe('capacityReducer', () => {
       { type: 'fetchStarted', key: 'A', issuedAt: 1 },
       { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) },
       { type: 'fetchStarted', key: 'B', issuedAt: 2 },
-      { type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 50, version: 'v2' }, sentOn: 'v1', confirmedAt: 3 },
+      { type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 50, version: 'v2' }, sent: { on: 'v1', at: 0 }, confirmedAt: 3 },
       { type: 'fetchSucceeded', key: 'B', issuedAt: 2, response: response(40) },
     )
     expect(state.data?.key).toBe('B')
@@ -191,7 +191,7 @@ describe('capacityReducer', () => {
     const saved = capacityReducer(loaded, {
       type: 'saveConfirmed',
       person: { id: 4, name: 'Dee Okafor', weeklyHours: 50, version: 'v9' },
-      sentOn: 'v1', confirmedAt: 2,
+      sent: { on: 'v1', at: 0 }, confirmedAt: 2,
     })
     expect(saved.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 50, version: 'v9' })
   })
@@ -230,7 +230,7 @@ describe('capacityReducer', () => {
       { type: 'saveRetrying', id: 4, version: 'v1', value: 50 },
       { type: 'saveGaveUp', id: 1, version: 'v1', value: 36 },
       // A confirmed save of Ana says nothing about Dee.
-      { type: 'saveConfirmed', person: { id: 1, name: 'Ana Ferreira', weeklyHours: 36, version: 'v2' }, sentOn: 'v1', confirmedAt: 3 },
+      { type: 'saveConfirmed', person: { id: 1, name: 'Ana Ferreira', weeklyHours: 36, version: 'v2' }, sent: { on: 'v1', at: 0 }, confirmedAt: 3 },
     )
     expect(certaintyOf(state, 4)).toBe('retrying')
     expect(certaintyOf(state, 1)).toBe('certain')
@@ -242,7 +242,7 @@ describe('capacityReducer', () => {
     const saved = capacityReducer(gaveUp, {
       type: 'saveConfirmed',
       person: { id: 4, name: 'Dee Okafor', weeklyHours: 40, version: 'v2' },
-      sentOn: 'v1', confirmedAt: 2,
+      sent: { on: 'v1', at: 0 }, confirmedAt: 2,
     })
     expect(certaintyOf(saved, 4)).toBe('certain')
   })
@@ -254,21 +254,43 @@ describe('capacityReducer', () => {
     const state = run(
       { type: 'fetchStarted', key: 'A', issuedAt: 1 },
       { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: atV3 },
-      { type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 50, version: 'v2' }, sentOn: 'v1', confirmedAt: 2 },
+      { type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 50, version: 'v2' }, sent: { on: 'v1', at: 0 }, confirmedAt: 2 },
     )
     expect(state.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 60, version: 'v3' })
     // While the row is at the version sent on, or at the answer's own, it applies.
     const sentOnShown = capacityReducer(state, {
-      type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 70, version: 'v4' }, sentOn: 'v3', confirmedAt: 3,
+      type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 70, version: 'v4' }, sent: { on: 'v3', at: 0 }, confirmedAt: 3,
     })
     expect(sentOnShown.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 70, version: 'v4' })
+  })
+
+  it('takes a newer row from a load sent after our stored save, but not from one sent before it', () => {
+    // Ours (sent at 3 on v1) stored v2/50; another manager then saved v3/60.
+    const atV3 = { ...response(60), people: response(60).people.map((p) => (p.id === 4 ? { ...p, version: 'v3' } : p)) }
+    const after = run(
+      { type: 'fetchStarted', key: 'A', issuedAt: 1 },
+      { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) },
+      { type: 'fetchStarted', key: 'B', issuedAt: 4 }, // sent after ours
+      { type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 50, version: 'v2' }, sent: { on: 'v1', at: 3 }, confirmedAt: 5 },
+      { type: 'fetchSucceeded', key: 'B', issuedAt: 4, response: atV3 },
+    )
+    expect(after.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 60, version: 'v3' })
+    // A load sent before ours may show an older version just as well: ours stays.
+    const before = run(
+      { type: 'fetchStarted', key: 'A', issuedAt: 1 },
+      { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) },
+      { type: 'fetchStarted', key: 'B', issuedAt: 2 }, // sent before ours
+      { type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 50, version: 'v2' }, sent: { on: 'v1', at: 3 }, confirmedAt: 5 },
+      { type: 'fetchSucceeded', key: 'B', issuedAt: 2, response: atV3 },
+    )
+    expect(before.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 50, version: 'v2' })
   })
 
   it('takes the server value from a load sent after the save', () => {
     const state = run(
       { type: 'fetchStarted', key: 'A', issuedAt: 1 },
       { type: 'fetchSucceeded', key: 'A', issuedAt: 1, response: response(40) },
-      { type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 50, version: 'v2' }, sentOn: 'v1', confirmedAt: 2 },
+      { type: 'saveConfirmed', person: { id: 4, name: 'Dee Okafor', weeklyHours: 50, version: 'v2' }, sent: { on: 'v1', at: 0 }, confirmedAt: 2 },
       { type: 'fetchStarted', key: 'B', issuedAt: 3 },
       // Someone else changed it again since: the newer load wins.
       { type: 'fetchSucceeded', key: 'B', issuedAt: 3, response: response(36) },

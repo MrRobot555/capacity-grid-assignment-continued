@@ -275,7 +275,7 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
           editing={editing}
           outcome={
             editing.invalid !== null
-              ? { text: editing.invalid, retry: false }
+              ? { text: editing.invalid, retry: false, error: true }
               : editing.failure && failureMessage(editing.failure, editingPerson, state.unsure[editing.id])
           }
           onChange={(draft) => setEditing({ ...editing, base: shownRow(editing), draft, invalid: null, failure: null })}
@@ -417,14 +417,15 @@ function CapacityEditor(props: {
   name: string
   capacity: CapacityView
   editing: Editing
-  /** What the hint says instead of the usual text, and whether Save is a retry. */
-  outcome: { text: string; retry: boolean } | null
+  /** What the hint says instead of the usual text, whether it is an error,
+   * and whether Save is a retry. */
+  outcome: Outcome | null
   onChange: (draft: string) => void
   onSubmit: () => void
   onCancel: () => void
 }) {
   const { name, capacity, editing, outcome, onChange, onSubmit, onCancel } = props
-  const error = outcome?.text ?? null
+  const error = outcome?.error ? outcome.text : null
   const hintId = `cap-hint-${editing.id}`
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -476,8 +477,8 @@ function CapacityEditor(props: {
       <button type="button" onClick={onCancel} disabled={editing.saving}>
         Cancel
       </button>
-      <p id={hintId} className={error ? 'hint error' : 'hint'} role={error ? 'alert' : undefined}>
-        {error ?? 'Changes capacity for every week, past and future.'}
+      <p id={hintId} className={error ? 'hint error' : 'hint'} role={error ? 'alert' : outcome ? 'status' : undefined}>
+        {outcome?.text ?? 'Changes capacity for every week, past and future.'}
       </p>
       {capacity.note && <p className="hint">{capacity.note}</p>}
     </form>
@@ -561,32 +562,39 @@ function failureMessage(
   f: Failure,
   row: { weeklyHours: number; version: string },
   doubt: { values: number[] } | undefined,
-): { text: string; retry: boolean } {
+): Outcome {
   if (row.version !== f.sent.version || f.kind === 'changed') {
     // Whoever stored it, the server holds what was typed: nothing to save.
     if (row.weeklyHours === f.hours) {
-      return { text: `The weekly hours on the server are ${formatHours(f.hours)}h now, the value you entered.`, retry: false }
+      return {
+        text: `The weekly hours on the server are ${formatHours(f.hours)}h now, the value you entered.`,
+        retry: false,
+        error: false,
+      }
     }
     return {
       text: changedMessage({ now: row.weeklyHours, loaded: f.sent.weeklyHours, uncertain: f.uncertain, earlier: f.earlier }),
       retry: true,
+      error: true,
     }
   }
   switch (f.kind) {
     case 'refused':
       return {
         text:
-          `Not saved. ${errorText(f.error)}` +
+          `Not saved. ${sentence(errorText(f.error))}` +
           (doubt ? ` Your earlier save of ${doubt.values.map((h) => `${formatHours(h)}h`).join(' or ')} is still unconfirmed.` : ''),
         retry: true,
+        error: true,
       }
     case 'unconfirmed':
       return {
         text: `Couldn't confirm the save of ${formatHours(f.hours)}h, so the server may or may not hold it. Saving again is safe. (${errorText(f.error)})`,
         retry: true,
+        error: true,
       }
     case 'unexpected':
-      return { text: `Something went wrong while saving: ${errorText(f.error)}. Saving again is safe.`, retry: true }
+      return { text: `Something went wrong while saving: ${errorText(f.error)}. Saving again is safe.`, retry: true, error: true }
   }
 }
 
@@ -606,6 +614,15 @@ function changedMessage(f: { now: number; loaded: number; uncertain: boolean; ea
     return `The weekly hours on the server were ${what}; your attempt may have been stored before that. Your value is kept here; save again to apply it.`
   }
   return `Not saved: the weekly hours on the server were ${what}. Your value is kept here; save again to apply it.`
+}
+
+/** A message about the editor's draft: its text, whether it is an error, and
+ * whether Save is a retry. */
+type Outcome = { text: string; retry: boolean; error: boolean }
+
+/** Text that may lack a full stop, as one sentence. */
+function sentence(text: string): string {
+  return /[.!?)]$/.test(text) ? text : `${text}.`
 }
 
 function errorText(err: unknown): string {

@@ -257,6 +257,8 @@ func TestUpdatePersonGivesUpOnALockedRow(t *testing.T) {
 	}
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("status %d, want 503: %s", rec.Code, rec.Body)
+	} else if msg := decodeBody(t, rec)["error"]; msg != "the database didn't respond in time" {
+		t.Errorf("error %q: the manager must be told why, not just the status", msg)
 	}
 	if err := tx.Rollback(ctx); err != nil {
 		t.Fatal(err)

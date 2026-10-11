@@ -57,7 +57,7 @@ test('save failure (500) leaves the grid untouched; Retry applies the confirmed 
   await editorInput(page, DEE.name).fill('50')
   await editor(page).getByRole('button', { name: 'Save' }).click()
 
-  await expect(editorHint(page)).toHaveText('Not saved. could not update person')
+  await expect(editorHint(page)).toHaveText('Not saved. could not update person.')
   await expect(editor(page).getByRole('button', { name: 'Retry', exact: true })).toBeVisible()
   await expect(editorInput(page, DEE.name)).toHaveValue('50')
   // Nothing in the grid moved.
@@ -280,7 +280,7 @@ test('a failed save whose row was scrolled away still shows its error', async ({
   await page.locator('.scroller').evaluate((el) => (el.scrollTop = 15000))
   hold.release()
 
-  await expect(editorHint(page)).toHaveText('Not saved. could not update person')
+  await expect(editorHint(page)).toHaveText('Not saved. could not update person.')
   await expect(editorHint(page)).toBeInViewport()
 })
 
@@ -294,7 +294,7 @@ test('a failed save stays visible when "Only over capacity" hides its row', asyn
   await openEditor(page, 'Ana Ferreira')
   await editorInput(page, 'Ana Ferreira').fill('50')
   await editorInput(page, 'Ana Ferreira').press('Enter')
-  await expect(editorHint(page)).toHaveText('Not saved. could not update person')
+  await expect(editorHint(page)).toHaveText('Not saved. could not update person.')
   await page.getByLabel('Only over capacity').check()
   await expect(page.locator('tbody th.name', { hasText: 'Ana Ferreira' })).toHaveCount(0)
   await expect(editorHint(page)).toBeInViewport()
@@ -321,7 +321,7 @@ test('pressing Save keeps focus in the editor, so Escape works after a failure',
   const save = editor(page).getByRole('button', { name: 'Saving…' })
   await expect(save).toBeFocused()
   hold.release()
-  await expect(editorHint(page)).toHaveText('Not saved. could not update person')
+  await expect(editorHint(page)).toHaveText('Not saved. could not update person.')
   await page.keyboard.press('Escape')
   await expect(editor(page)).toHaveCount(0)
   await expect(capButton(page, DEE.name)).toBeFocused()

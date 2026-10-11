@@ -206,3 +206,11 @@ left unfinished. Append as you go; a line or two per entry is right.
 - "The server holds what was typed" required the save to have been in doubt; after a definite failure the editor offered Retry with nothing to send. The condition is gone, and the wording ("the value you entered") credits nobody.
 - An unexpected error left the "?" saying "Sending it again" for good and was marked certain, so a later load produced a false "Not saved". It is now recorded as given up and uncertain.
 - Gates: the earlier-value check, the " or " list, the skeleton after a failed first load.
+
+## Review round 14 → the chain is broken; rules applied where they were missing
+
+- None of the findings came from round 13's changes, the first round since round 9 where the previous fixes produced nothing new.
+- An older gap in "an outcome belongs to the save": it held within one save loop, but a Retry is a new loop. When an identical earlier attempt on the same version is still in doubt, the Retry now starts uncertain, so a 412 or a refusal can't say "Not saved".
+- The parallel of round 12's late-answer rule, in the load path: a load sent after our stored save that shows a third version read the row after ours, so it wins over our row. A load sent before can't be placed and keeps ours.
+- "The server holds what you typed" is information, shown as a status, not an error.
+- The auditor's long e2e mutation runs each ended its turn with "Waiting.", which arrived here as dozens of notifications; it was working, not stuck. A cleanup `pgrep -f` of its leftover `tail` processes matched and killed my own shell: noted in next-steps.
