@@ -102,10 +102,18 @@ export type State = {
   people: Record<number, { name: string; weeklyHours: number; version: string }>
   /** When each person's latest save was confirmed, on the same clock as `issuedAt`. */
   confirmedAt: Record<number, number>
-  /** The save `confirmedAt` refers to, when the server stored it (200): when
-   * it was sent, on which version (If-Match), and the version it produced. A
-   * 412 clears it: its row can't be placed against a load. */
-  stored: Record<number, { sentAt: number; sentOn: string; version: string }>
+  /**
+   * When each person's shown version became known, on the same clock: the
+   * `issuedAt` of the load that showed it, or the `confirmedAt` of the save.
+   * A load sent after that reads the row at that version or a newer one. (A
+   * load is applied only if no later one was sent before its answer.)
+   */
+  seenAt: Record<number, number>
+  /** The save `confirmedAt` refers to, when the server stored it (200): the
+   * version it was sent on (If-Match), when that version became known
+   * (`seenAt`), and the version it produced. A 412 clears it: its row can't
+   * be placed against a load. */
+  stored: Record<number, { onSeenAt: number; sentOn: string; version: string }>
   unsure: Record<number, Unsure>
 }
 
@@ -116,7 +124,7 @@ export type Action =
   /** The server's row after a save: what it stored (200, with the version
    * it was sent on), or what it holds now (412). Applied, except a stored row
    * that a load has already shown superseded (see the reducer). */
-  | { type: 'saveConfirmed'; person: Person; sent?: { on: string; at: number }; confirmedAt: number }
+  | { type: 'saveConfirmed'; person: Person; sent?: { on: string; seenAt: number }; confirmedAt: number }
   | { type: 'saveRetrying'; id: number; version: string; value: number }
   | { type: 'saveGaveUp'; id: number; version: string; value: number }
 
@@ -128,6 +136,7 @@ export const initialState: State = {
   data: null,
   people: {},
   confirmedAt: {},
+  seenAt: {},
   stored: {},
   unsure: {},
 }
@@ -150,18 +159,22 @@ export function capacityReducer(state: State, action: Action): State {
       // request for A is as stale as the one for B.
       if (action.issuedAt !== state.requestedAt) return state
       const people = { ...state.people }
+      const seenAt = { ...state.seenAt }
       for (const p of action.response.people) {
         // A load that was sent before a save was confirmed can carry the old
-        // weekly hours: the confirmed save is newer, so it wins. Unless the load
-        // was sent after our stored save and shows a third version (neither the
-        // one ours was written over nor ours): it read the row after ours, so
-        // it is newer. (A load sent earlier can't tell: it may show an older one.)
+        // weekly hours: the confirmed save is newer, so it wins. Unless the
+        // load was sent after the version our stored save was written over
+        // became known, and shows a third version (neither that one nor ours):
+        // it read the row at that version or later, so after ours. (A load
+        // sent before that can't tell: it may show an older version.)
         const confirmed = state.confirmedAt[p.id]
         const s = state.stored[p.id]
         const superseded =
-          s !== undefined && action.issuedAt > s.sentAt && p.version !== s.sentOn && p.version !== s.version
+          s !== undefined && action.issuedAt > s.onSeenAt && p.version !== s.sentOn && p.version !== s.version
         const keepLocal = confirmed !== undefined && confirmed > action.issuedAt && p.id in people && !superseded
-        people[p.id] = keepLocal ? people[p.id] : { name: p.name, weeklyHours: p.weeklyHours, version: p.version }
+        if (keepLocal) continue
+        people[p.id] = { name: p.name, weeklyHours: p.weeklyHours, version: p.version }
+        seenAt[p.id] = action.issuedAt
       }
       // A row seen at another version than a doubtful save was sent on: that
       // save can no longer land, so the doubt is over.
@@ -173,6 +186,7 @@ export function capacityReducer(state: State, action: Action): State {
         loading: false,
         error: null,
         people,
+        seenAt,
         unsure,
         data: {
           key: action.key,
@@ -202,8 +216,9 @@ export function capacityReducer(state: State, action: Action): State {
         ...state,
         people: { ...state.people, [id]: { name, weeklyHours, version } },
         confirmedAt: { ...state.confirmedAt, [id]: action.confirmedAt },
+        seenAt: { ...state.seenAt, [id]: action.confirmedAt },
         stored: action.sent
-          ? { ...state.stored, [id]: { sentAt: action.sent.at, sentOn: action.sent.on, version } }
+          ? { ...state.stored, [id]: { onSeenAt: action.sent.seenAt, sentOn: action.sent.on, version } }
           : without(state.stored, id),
         unsure: without(state.unsure, id),
       }

@@ -220,3 +220,10 @@ left unfinished. Append as you go; a line or two per entry is right.
 - The adversarial reviewer found no High or Medium. Its three Lows: the "Something went wrong" message missed round 14's full-stop fix (a parallel statement), and two comments still described the round-10 editor.
 - A gate that feeds the cause in by hand checks the outcome only: round 14's load-vs-stored-save rule was tested in the reducer with `sent.at` given, so the hook could record the time at the answer instead and nothing failed. The new test drives the real order through the hook.
 - A later fix can make an older gate vacuous: since round 11 every range is moved into the supported years before it is requested, so "no request for a half-typed year" could no longer fail. The test now checks the range itself.
+
+## Review round 16 → a load placed by what is known, not by when an attempt left
+
+- A load and a stored save were ordered by the attempt's send time, a stand-in. What decides it is whether the load was sent after the version the save was written over was known: such a load reads that version or a newer one, so a third version in it came after ours. Each shown version now records when it became known (`seenAt`), and the per-attempt tick is gone.
+- Correction to the "Save race" note under Grid above: it was covered only in `capacityState.test.ts`, with the stamps given by hand. The hook, which makes the stamps, is now tested through five orders of events in `saving.test.tsx`.
+- To before From keeps the number of weeks, the mirror of From past To.
+- The weeks' order inside each person's array is checked under a second plan (`enable_hashagg = off`); today's plan happened to return them in order.

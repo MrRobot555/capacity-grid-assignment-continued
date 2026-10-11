@@ -13,6 +13,7 @@ import {
   weekCount,
   weekRange,
   weeksFrom,
+  weeksUntil,
   withinSupportedYears,
 } from './dates'
 
@@ -31,6 +32,12 @@ describe.each(['America/Los_Angeles', 'Europe/Budapest', 'Pacific/Kiritimati'])(
     expect(mondayOf('2025-12-29')).toBe('2025-12-29') // Monday
     expect(mondayOf('2026-01-01')).toBe('2025-12-29') // Thursday, new year
     expect(mondayOf('2026-01-04')).toBe('2025-12-29') // Sunday belongs to the week before
+  })
+
+  it('counts whole weeks back to the week of a date', () => {
+    process.env.TZ = tz
+    expect(weeksUntil('2025-12-03', 3)).toEqual({ from: '2025-11-17', to: '2025-12-07' }) // a Wednesday
+    expect(weeksUntil('2026-01-04', 1)).toEqual({ from: '2025-12-29', to: '2026-01-04' }) // a Sunday
   })
 
   it('moves by whole weeks across a DST change', () => {

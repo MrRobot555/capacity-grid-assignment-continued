@@ -174,7 +174,7 @@ test('validation: empty and out-of-range input show a message and send no PATCH'
   await expect(capButton(page, DEE.name)).toHaveText('40h')
 })
 
-test('a load sent before a save was confirmed does not undo the save', async ({ page }) => {
+test('a load sent before a save does not undo the save', async ({ page }) => {
   await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
 
   let lateDelivered = false

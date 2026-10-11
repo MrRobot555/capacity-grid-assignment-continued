@@ -141,6 +141,19 @@ func TestCapacityMatchesDayByDayOracle(t *testing.T) {
 			assertMatchesOracle(t, ctx, s.db, weeks)
 		})
 	}
+	// The order of each person's weeks is the query's ORDER BY, not whatever
+	// the plan chosen today happens to return: check it under another plan.
+	t.Run("largest allowed range, aggregated by sorting", func(t *testing.T) {
+		tx, err := s.db.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err := tx.Exec(ctx, `SET LOCAL enable_hashagg = off`); err != nil {
+			t.Fatal(err)
+		}
+		assertMatchesOracle(t, ctx, tx, mustWeeks(t, "2025-05-26", "2027-06-06"))
+	})
 }
 
 // Shapes of assignment the seed doesn't contain, inserted in a transaction that

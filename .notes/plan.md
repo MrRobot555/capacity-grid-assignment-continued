@@ -6,6 +6,8 @@ Decisions only. Code-level detail lives in the code and its tests.
 > - **No multi-range cache.** Only one range is held at a time, and the previous one stays on screen while the next loads. Not built: the cache, instant back-navigation, and "an edit fixes every cached range". The normalized people map and the pre-save-GET rule were kept.
 > - **No sort by over-allocation.** There is only the "Only over capacity" filter.
 > - **JIT is "tuned" by the query shape**, not by settings: the weeks are passed as a `date[]`. See the worklog.
+> - **The save contract grew after the review rounds** (§3 shows the first one): every row carries a `version` (from `xmin`); a save sends `If-Match` and gets `412 { error, current }` when the row has moved on, `503` when the row stays locked past the deadline, and `500 { error, stored: "unknown" }` when its COMMIT got no answer. See `api/people.go` and the register (`.notes/review-register.md`).
+> - **The Go tests** are `api/api_test.go` and `api/oracle_test.go`, not `api/capacity_test.go` (§7).
 
 ## 1. What the data actually says (probed 2026-10-09; facts, not assumptions)
 

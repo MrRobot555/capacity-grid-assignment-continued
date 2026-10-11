@@ -23,6 +23,7 @@ import {
   weekCount,
   weekRange,
   weeksFrom,
+  weeksUntil,
   type ISODate,
   type WeekRange,
 } from './dates'
@@ -216,7 +217,12 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
           // Moving the start past the end keeps the number of weeks shown.
           onCommit={(date) => onRangeChange(date > to ? weeksFrom(date, weeks) : weekRange(date, to))}
         />
-        <DateInput label="To" value={to} onCommit={(date) => onRangeChange(weekRange(from, date))} />
+        <DateInput
+          label="To"
+          value={to}
+          // Moving the end before the start keeps the number of weeks shown too.
+          onCommit={(date) => onRangeChange(date < from ? weeksUntil(date, weeks) : weekRange(from, date))}
+        />
         <label>
           Show
           <select value={weeks} onChange={(e) => onRangeChange(weeksFrom(from, Number(e.target.value)))}>

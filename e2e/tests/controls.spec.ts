@@ -55,8 +55,19 @@ test('typing a To date ends the range with the week containing it', async ({ pag
   // Wednesday 28 Jan → the week of 26 Jan is the last one.
   await expect.poll(() => weekLabels(page)).toEqual(['29 Dec', '5 Jan', '12 Jan', '19 Jan', '26 Jan'])
   await expect(page).toHaveURL(/from=2025-12-29&to=2026-02-01/)
-  // No request for a half-typed year (0002, 0020, 0202).
-  expect(requested.filter((q) => /=0\d\d\d-/.test(q))).toEqual([])
+  // Typed without a pause and applied on Enter: one request, for that range.
+  expect(requested).toEqual(['?from=2025-12-29&to=2026-02-01'])
+})
+
+test('typing a To date before From keeps the number of weeks, ending with that week', async ({ page }) => {
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  const to = page.getByLabel('To', { exact: true })
+  await to.focus()
+  await page.keyboard.type('12032025', { delay: 80 })
+  await page.keyboard.press('Enter')
+  // Wednesday 3 Dec → its week is the last of the 3 shown.
+  await expectWeeks(page, ['17 Nov', '24 Nov', '1 Dec'])
+  await expect(page).toHaveURL(/from=2025-11-17&to=2025-12-07/)
 })
 
 test('a URL range longer than the API serves is shortened, not an error', async ({ page }) => {

@@ -922,8 +922,8 @@ describe('a save answered after a load showed a newer change', () => {
 describe('a load sent while a save is on its way, answered after it', () => {
   // Ours stored 50 (v2) and its 200 arrived; then another manager saved 60
   // (v3), and a load sent while ours was on its way read it. The load was sent
-  // after our save, so v3 came after ours: it wins. This holds only if the
-  // save's time is taken when it is sent, not when its answer arrives.
+  // after v1 (the version ours was written over) was known, so it read v1 or
+  // later: v3 came after ours, and it wins.
   it('shows the newer row the load read', async () => {
     const server = fakeServer(['store-and-hold-answer'])
     const { rerender } = renderGrid()
@@ -943,6 +943,97 @@ describe('a load sent while a save is on its way, answered after it', () => {
     server.changeElsewhere(4, 60)
     act(() => releaseLoad())
     await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^60h$/))
+  })
+})
+
+describe('a load and a save placed against each other through the hook', () => {
+  // Each case is the order of events a manager can cause; what decides it is
+  // the time the hook stamps on the load, the save and the version it was
+  // sent on, so the hook is what these test, not the reducer alone.
+  it('takes a newer row from a load sent before the save, once the version it was written over was known', async () => {
+    const server = fakeServer(['store'])
+    const { rerender } = renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    const releaseLoad = holdLoads({ readNow: false })
+    nextRange(rerender)
+    await waitFor(() => expect(loads()).toBe(2))
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/)
+    server.changeElsewhere(4, 60)
+    await releaseLoad()
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^60h$/))
+  })
+
+  it('takes it from a load sent between two attempts of the save, too', async () => {
+    const server = fakeServer(['lose-request', 'store'])
+    retryTiming.delay = () => 300
+    const { rerender } = renderGrid()
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(server.patches()).toHaveLength(1))
+    const releaseLoad = holdLoads({ readNow: false })
+    nextRange(rerender)
+    await waitFor(() => expect(loads()).toBe(2))
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    expect(server.patches()).toHaveLength(2)
+    server.changeElsewhere(4, 60)
+    await releaseLoad()
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^60h$/))
+  })
+
+  it('keeps our stored row over a load sent during the save that read the row before it', async () => {
+    const server = fakeServer(['hold'])
+    const { rerender } = renderGrid()
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(server.patches()).toHaveLength(1))
+    const releaseLoad = holdLoads({ readNow: true })
+    nextRange(rerender)
+    await waitFor(() => expect(loads()).toBe(2))
+    act(() => server.release())
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/))
+    await releaseLoad()
+    expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/)
+    expect(server.hours[4]).toBe(50)
+  })
+
+  it('keeps our row over a load sent before the version it was written over was known', async () => {
+    // 45 is saved (v2), its answer slow; a load sent meanwhile reads v1/40.
+    // Then 50 is saved on v2 (v3). The load was sent before v2 was known, so
+    // its v1 can't be placed after ours: 50 stays.
+    const server = fakeServer(['hold', 'store'])
+    const { rerender } = renderGrid()
+    await edit('Dee Okafor', '45')
+    await waitFor(() => expect(server.patches()).toHaveLength(1))
+    const releaseLoad = holdLoads({ readNow: true })
+    nextRange(rerender)
+    await waitFor(() => expect(loads()).toBe(2))
+    act(() => server.release())
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/)
+    await releaseLoad()
+    expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/)
+    expect(server.hours[4]).toBe(50)
+  })
+
+  it("places a load against a 412's row, not against an earlier stored save", async () => {
+    const server = fakeServer(['store', 'hold-then-check'])
+    const { rerender } = renderGrid()
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    await edit('Dee Okafor', '55')
+    await waitFor(() => expect(server.patches()).toHaveLength(2))
+    server.changeElsewhere(4, 60)
+    const releaseLoad = holdLoads({ readNow: true })
+    nextRange(rerender)
+    await waitFor(() => expect(loads()).toBe(2))
+    server.changeElsewhere(4, 70)
+    act(() => server.release())
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^70h$/))
+    await releaseLoad()
+    expect(capButton('Dee Okafor')).toHaveTextContent(/^70h$/)
+    expect(screen.getByRole('alert')).toHaveTextContent('(now 70h)')
   })
 })
 
@@ -1286,6 +1377,25 @@ function failLoads(times: number) {
     if (init?.method !== 'PATCH' && left-- > 0) return new Response('<html>Bad Gateway</html>', { status: 502 })
     return original(url, init)
   })
+}
+
+// Holds the loads sent from now on until released. Each reads the server when
+// it is sent (`readNow`) or only when released.
+function holdLoads({ readNow }: { readNow: boolean }) {
+  const original = vi.mocked(fetch).getMockImplementation()!
+  const waiting: (() => void)[] = []
+  vi.mocked(fetch).mockImplementation(async (url, init) => {
+    if (init?.method === 'PATCH') return original(url, init)
+    const read = readNow ? original(url, init) : null
+    await new Promise<void>((resolve) => waiting.push(resolve))
+    return read ?? original(url, init)
+  })
+  return async () => {
+    await act(async () => {
+      waiting.splice(0).forEach((release) => release())
+      await new Promise((r) => setTimeout(r, 50))
+    })
+  }
 }
 
 const loads = () => vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method !== 'PATCH').length

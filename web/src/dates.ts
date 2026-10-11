@@ -100,6 +100,11 @@ export function weeksFrom(from: ISODate, weeks: number): WeekRange {
   return { from: start, to: addDays(start, weeks * 7 - 1) }
 }
 
+/** `weeks` whole weeks, the last one being the week of `to`. */
+export function weeksUntil(to: ISODate, weeks: number): WeekRange {
+  return weeksFrom(addDays(mondayOf(to), -(weeks - 1) * 7), weeks)
+}
+
 /** The longest range the API serves in one request. */
 export const MAX_WEEKS = 106
 
