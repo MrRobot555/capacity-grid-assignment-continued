@@ -113,6 +113,8 @@ test('network abort on the very first load: banner, no table; Retry recovers', a
   await expect(banner).toContainText("Couldn't reach the server")
   await expect(banner).not.toContainText('previous range')
   await expect(page.locator('table')).toHaveCount(0)
+  // Nothing is loading any more, so no skeleton under the banner.
+  await expect(page.getByLabel('Loading capacity')).toHaveCount(0)
 
   await page.unrouteAll({ behavior: 'ignoreErrors' })
   await banner.getByRole('button', { name: 'Retry' }).click()

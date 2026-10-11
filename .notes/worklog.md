@@ -198,3 +198,11 @@ left unfinished. Append as you go; a line or two per entry is right.
 - Round 11's reload for a late save answer read a copy of the state that lags the reducer. Deleted: the reducer now decides, from the version the save was sent on. A 200 is written over that version, so a third version a load showed is newer and stays.
 - R10-A1's gate had become vacuous (the message is derived either way); the one case where the outcomes differ (a load showed our value, then a refused attempt: done, editor closes) is now pinned.
 - Paused here at the owner's request. Next steps: `.notes/next-steps.md`.
+
+## Review round 13 → resumed; the reducer and the loop read the same row
+
+- Resumed on 2026-10-11. Round 12's redesign held where it was applied (`shownRow`, the edge years); every finding came from where it wasn't.
+- Half-migration again: round 12 let the reducer keep a load's row over a late answer, but the save loop beside it still settled on the 412's own row, so the editor could close as saved while the grid showed another value. For a 200 the order is certain (ours was written over the version it was sent on), for a 412 it isn't. The rule now covers only the 200, and a 412's row is applied by both.
+- "The server holds what was typed" required the save to have been in doubt; after a definite failure the editor offered Retry with nothing to send. The condition is gone, and the wording ("the value you entered") credits nobody.
+- An unexpected error left the "?" saying "Sending it again" for good and was marked certain, so a later load produced a false "Not saved". It is now recorded as given up and uncertain.
+- Gates: the earlier-value check, the " or " list, the skeleton after a failed first load.

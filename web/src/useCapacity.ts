@@ -77,11 +77,11 @@ export function useCapacity(from: ISODate, to: ISODate) {
    */
   const saveWeeklyHours = useCallback(
     async (id: number, weeklyHours: number, version: string): Promise<SaveResult> => {
-      // The server's row is fresh, whether a save stored it (200) or the server
-      // sent it back (412): one way to apply it, ordered against loads (the
-      // reducer decides, from the version it was sent on).
-      const confirmWith = (person: Person) =>
-        dispatch({ type: 'saveConfirmed', person, sentOn: version, confirmedAt: ++clock.current })
+      // The server's row is fresh, whether a save stored it (200, sent on
+      // `sentOn`) or the server sent it back (412): one way to apply it,
+      // ordered against loads.
+      const confirmWith = (person: Person, sentOn?: string) =>
+        dispatch({ type: 'saveConfirmed', person, sentOn, confirmedAt: ++clock.current })
       // An earlier save of this person, on this same version, whose outcome is
       // unknown: it may be what the server holds by the time we get there.
       const doubt = unsure.current[id]
@@ -95,28 +95,34 @@ export function useCapacity(from: ISODate, to: ISODate) {
       // from: no attempt could land, so none is sent.
       const known = people.current[id]
       if (known && known.version !== version) return settledBy({ id, ...known })
-      for (let attempt = 1; ; attempt++) {
-        try {
-          confirmWith(await updateWeeklyHours(id, weeklyHours, version))
-          return { ok: true }
-        } catch (error) {
-          if (error instanceof ApiError && error.current) {
-            confirmWith(error.current)
-            return settledBy(error.current)
+      try {
+        for (let attempt = 1; ; attempt++) {
+          try {
+            confirmWith(await updateWeeklyHours(id, weeklyHours, version), version)
+            return { ok: true }
+          } catch (error) {
+            if (error instanceof ApiError && error.current) {
+              confirmWith(error.current)
+              return settledBy(error.current)
+            }
+            const definite = isDefiniteFailure(error)
+            if (definite && !uncertain) return { ok: false, error, unconfirmed: false }
+            // From here an attempt of this save may have landed.
+            uncertain = true
+            const now = people.current[id]
+            if (now && now.version !== version) return settledBy({ id, ...now })
+            if (definite || attempt >= SAVE_ATTEMPTS || !mounted.current) {
+              dispatch({ type: 'saveGaveUp', id, version, value: weeklyHours })
+              return { ok: false, error, unconfirmed: true }
+            }
+            dispatch({ type: 'saveRetrying', id, version, value: weeklyHours })
+            await new Promise((r) => setTimeout(r, retryTiming.delay(attempt)))
           }
-          const definite = isDefiniteFailure(error)
-          if (definite && !uncertain) return { ok: false, error, unconfirmed: false }
-          // From here an attempt of this save may have landed.
-          uncertain = true
-          const now = people.current[id]
-          if (now && now.version !== version) return settledBy({ id, ...now })
-          if (definite || attempt >= SAVE_ATTEMPTS || !mounted.current) {
-            dispatch({ type: 'saveGaveUp', id, version, value: weeklyHours })
-            return { ok: false, error, unconfirmed: true }
-          }
-          dispatch({ type: 'saveRetrying', id, version, value: weeklyHours })
-          await new Promise((r) => setTimeout(r, retryTiming.delay(attempt)))
         }
+      } catch (unexpected) {
+        // Nothing is being sent any more: "retrying" would be false.
+        if (uncertain) dispatch({ type: 'saveGaveUp', id, version, value: weeklyHours })
+        throw unexpected
       }
     },
     [],

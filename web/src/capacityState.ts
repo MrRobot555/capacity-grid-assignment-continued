@@ -109,9 +109,10 @@ export type Action =
   | { type: 'fetchStarted'; key: string; issuedAt: number }
   | { type: 'fetchSucceeded'; key: string; issuedAt: number; response: CapacityResponse }
   | { type: 'fetchFailed'; key: string; issuedAt: number; error: string }
-  /** The server's row after a save: what it stored (200), or what it holds
-   * now (412). Either is fresh, so it is applied. */
-  | { type: 'saveConfirmed'; person: Person; sentOn: string; confirmedAt: number }
+  /** The server's row after a save: what it stored (200, with the version
+   * it was sent on), or what it holds now (412). Applied, except a stored row
+   * that a load has already shown superseded (see the reducer). */
+  | { type: 'saveConfirmed'; person: Person; sentOn?: string; confirmedAt: number }
   | { type: 'saveRetrying'; id: number; version: string; value: number }
   | { type: 'saveGaveUp'; id: number; version: string; value: number }
 
@@ -178,13 +179,14 @@ export function capacityReducer(state: State, action: Action): State {
 
     case 'saveConfirmed': {
       const { id, name, weeklyHours, version } = action.person
-      // A load already showed the row at a third version: neither the one the
-      // save was sent on (If-Match) nor this one. A 200 was written over the
-      // version it was sent on, so that row is newer than ours; a 412's row
-      // was read at a time we can't place. Either way the row shown stays,
-      // like any loaded row, until the next load or save.
+      // A stored row (200), where a load already showed a third version:
+      // neither the one the save was sent on (If-Match) nor ours. Ours was
+      // written over the version sent on, so the shown row came after it and
+      // stays. A 412's row is always applied: when it was read can't be
+      // placed against a load, and the save loop settles on that same row, so
+      // the grid and the editor never decide on different rows.
       const shown = state.people[id]?.version
-      if (shown !== undefined && shown !== action.sentOn && shown !== version) return state
+      if (action.sentOn !== undefined && shown !== undefined && shown !== action.sentOn && shown !== version) return state
       return {
         ...state,
         people: { ...state.people, [id]: { name, weeklyHours, version } },

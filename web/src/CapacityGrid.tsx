@@ -189,7 +189,8 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
     } catch (err) {
       // Anything unexpected must still end the save, or the editor would stay
       // at "Saving…" with every button locked.
-      failure = { kind: 'unexpected', sent, hours, uncertain: false, error: err }
+      // What happened to the attempts isn't known.
+      failure = { kind: 'unexpected', sent, hours, uncertain: true, error: err }
     }
     setEditing((cur) => (cur?.id === id ? { ...cur, saving: false, failure } : cur))
   }
@@ -562,8 +563,9 @@ function failureMessage(
   doubt: { values: number[] } | undefined,
 ): { text: string; retry: boolean } {
   if (row.version !== f.sent.version || f.kind === 'changed') {
-    if (f.uncertain && row.weeklyHours === f.hours) {
-      return { text: `The weekly hours on the server are ${formatHours(f.hours)}h now, the value you saved.`, retry: false }
+    // Whoever stored it, the server holds what was typed: nothing to save.
+    if (row.weeklyHours === f.hours) {
+      return { text: `The weekly hours on the server are ${formatHours(f.hours)}h now, the value you entered.`, retry: false }
     }
     return {
       text: changedMessage({ now: row.weeklyHours, loaded: f.sent.weeklyHours, uncertain: f.uncertain, earlier: f.earlier }),
