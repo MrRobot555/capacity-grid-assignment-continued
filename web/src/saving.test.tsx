@@ -238,9 +238,23 @@ describe('what a failed save says', () => {
     }
     renderGrid()
     await edit('Dee Okafor', '50')
-    expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong while saving')
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /^Something went wrong while saving: boom\. Saving again is safe\.$/,
+    )
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+  })
+
+  it('ends an error that is already a sentence with one full stop', async () => {
+    fakeServer(['lose-request'])
+    retryTiming.delay = () => {
+      throw new Error('Something broke.')
+    }
+    renderGrid()
+    await edit('Dee Okafor', '50')
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /^Something went wrong while saving: Something broke\. Saving again is safe\.$/,
+    )
   })
 })
 
@@ -902,6 +916,33 @@ describe('a save answered after a load showed a newer change', () => {
     act(() => server.release())
     await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
     expect(capButton('Dee Okafor')).toHaveTextContent(/^60h$/)
+  })
+})
+
+describe('a load sent while a save is on its way, answered after it', () => {
+  // Ours stored 50 (v2) and its 200 arrived; then another manager saved 60
+  // (v3), and a load sent while ours was on its way read it. The load was sent
+  // after our save, so v3 came after ours: it wins. This holds only if the
+  // save's time is taken when it is sent, not when its answer arrives.
+  it('shows the newer row the load read', async () => {
+    const server = fakeServer(['store-and-hold-answer'])
+    const { rerender } = renderGrid()
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(server.patches()).toHaveLength(1))
+    const original = vi.mocked(fetch).getMockImplementation()!
+    let releaseLoad: () => void = () => {}
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      if (init?.method !== 'PATCH') await new Promise<void>((resolve) => (releaseLoad = resolve))
+      return original(url, init)
+    })
+    nextRange(rerender)
+    await waitFor(() => expect(loads()).toBe(2))
+    act(() => server.release())
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/)
+    server.changeElsewhere(4, 60)
+    act(() => releaseLoad())
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^60h$/))
   })
 })
 

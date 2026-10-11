@@ -214,3 +214,9 @@ left unfinished. Append as you go; a line or two per entry is right.
 - The parallel of round 12's late-answer rule, in the load path: a load sent after our stored save that shows a third version read the row after ours, so it wins over our row. A load sent before can't be placed and keeps ours.
 - "The server holds what you typed" is information, shown as a status, not an error.
 - The auditor's long e2e mutation runs each ended its turn with "Waiting.", which arrived here as dozens of notifications; it was working, not stuck. A cleanup `pgrep -f` of its leftover `tail` processes matched and killed my own shell: noted in next-steps.
+
+## Review round 15 → no behaviour defect, two gates moved to the cause
+
+- The adversarial reviewer found no High or Medium. Its three Lows: the "Something went wrong" message missed round 14's full-stop fix (a parallel statement), and two comments still described the round-10 editor.
+- A gate that feeds the cause in by hand checks the outcome only: round 14's load-vs-stored-save rule was tested in the reducer with `sent.at` given, so the hook could record the time at the answer instead and nothing failed. The new test drives the real order through the hook.
+- A later fix can make an older gate vacuous: since round 11 every range is moved into the supported years before it is requested, so "no request for a half-typed year" could no longer fail. The test now checks the range itself.

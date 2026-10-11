@@ -65,10 +65,10 @@ export function useCapacity(from: ISODate, to: ISODate) {
   const retry = useCallback(() => setAttempt((n) => n + 1), [])
 
   /**
-   * Stores a person's weekly hours, conditional on the version the editor
-   * started from (If-Match). When an attempt gets no definite answer, the
-   * identical request is sent again, up to SAVE_ATTEMPTS times, with "?" shown
-   * meanwhile.
+   * Stores a person's weekly hours, conditional on `version` (If-Match): the
+   * row the manager was last shown. When an attempt gets no definite answer,
+   * the identical request is sent again, up to SAVE_ATTEMPTS times, with "?"
+   * shown meanwhile.
    *
    * Once an attempt's outcome is unknown, a later request's definite failure
    * says only what *that request* did, so it can't settle the save. What

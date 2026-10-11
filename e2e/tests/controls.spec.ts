@@ -99,8 +99,10 @@ test('a range at the edge of the supported years survives a reload', async ({ pa
 })
 
 // A date input reports every half-typed year (0002, 0020, 0202…). Stopping
-// half-way through the year and leaving the field must not request one.
-test('a half-typed year is never requested', async ({ page }) => {
+// half-way through the year and leaving the field must not apply one: the range
+// stays as it was. (Checking the requests alone can't fail: any range applied
+// is moved into the supported years before it is requested.)
+test('a half-typed year is never applied or requested', async ({ page }) => {
   await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
   const requested: string[] = []
   page.on('request', (req) => {
@@ -111,7 +113,9 @@ test('a half-typed year is never requested', async ({ page }) => {
   await page.keyboard.type('03022', { delay: 80 })
   await page.keyboard.press('Tab')
   await page.waitForTimeout(1500)
-  expect(requested.filter((q) => /=0\d\d\d-/.test(q))).toEqual([])
+  expect(requested).toEqual([])
+  await expect(page).toHaveURL(new RegExp(`from=${FIXTURE.from}&to=${FIXTURE.to}`))
+  await expect(page.locator('thead th.week')).toHaveCount(FIXTURE_WEEKS.length)
 })
 
 test('a To date years ahead is shortened to the longest range, not an error', async ({ page }) => {

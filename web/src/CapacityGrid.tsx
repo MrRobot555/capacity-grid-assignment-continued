@@ -51,9 +51,10 @@ const OVERSCAN = 8
 type Editing = {
   id: number
   /**
-   * The row the draft was started from. The save is conditional on its
-   * version, so a change made since then (seen by a load or not) comes back
-   * as a conflict instead of being overwritten.
+   * The row the editor was opened with. Until a save fails, the save is
+   * conditional on its version (see `shownRow`), so a change made since then
+   * (seen by a load or not) comes back as a conflict instead of being
+   * overwritten.
    */
   base: Person
   draft: string
@@ -594,7 +595,7 @@ function failureMessage(
         error: true,
       }
     case 'unexpected':
-      return { text: `Something went wrong while saving: ${errorText(f.error)}. Saving again is safe.`, retry: true, error: true }
+      return { text: `Something went wrong while saving: ${sentence(errorText(f.error))} Saving again is safe.`, retry: true, error: true }
   }
 }
 

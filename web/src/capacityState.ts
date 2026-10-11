@@ -102,8 +102,9 @@ export type State = {
   people: Record<number, { name: string; weeklyHours: number; version: string }>
   /** When each person's latest save was confirmed, on the same clock as `issuedAt`. */
   confirmedAt: Record<number, number>
-  /** Each person's latest save the server stored (200): when it was sent, on
-   * which version (If-Match), and the version it produced. */
+  /** The save `confirmedAt` refers to, when the server stored it (200): when
+   * it was sent, on which version (If-Match), and the version it produced. A
+   * 412 clears it: its row can't be placed against a load. */
   stored: Record<number, { sentAt: number; sentOn: string; version: string }>
   unsure: Record<number, Unsure>
 }
