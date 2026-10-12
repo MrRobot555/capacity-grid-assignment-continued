@@ -299,9 +299,12 @@ export const MAX_WEEKLY_HOURS = 168
 
 /** The typed capacity as a number, or the reason it can't be saved. */
 export function parseWeeklyHours(draft: string): number | string {
-  const text = draft.trim()
+  // A comma decimal ("12,5") as well as a point: one separator, either one.
+  const text = /^[^.,]*,[^.,]*$/.test(draft.trim()) ? draft.trim().replace(',', '.') : draft.trim()
   // Number('') is 0: an emptied field must not quietly save zero capacity.
   if (text === '') return 'Enter the weekly hours.'
+  // Plain decimals only: Number() would also take "0x10", "1e1" or "-0".
+  if (!/^-?(\d+\.?\d*|\.\d+)$/.test(text)) return 'Enter a number of hours.'
   const hours = Number(text)
   if (!Number.isFinite(hours)) return 'Enter a number of hours.'
   if (hours < 0 || hours > MAX_WEEKLY_HOURS) return `Weekly hours must be between 0 and ${MAX_WEEKLY_HOURS}.`

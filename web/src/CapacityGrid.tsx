@@ -151,6 +151,14 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
   // which comes after the focus event. Not when the grid itself returns focus
   // without scrolling (`preventScroll`): that leaves the view as it is.
   const quietFocus = useRef(false)
+  // What had focus when the window lost it: the browser gives focus back to
+  // it, with no `relatedTarget`, and that is no step of the manager's.
+  const focusBeforeBlur = useRef<Element | null>(null)
+  useEffect(() => {
+    const remember = () => (focusBeforeBlur.current = document.activeElement)
+    window.addEventListener('blur', remember)
+    return () => window.removeEventListener('blur', remember)
+  }, [])
   // Tabbing into the grid from outside lands on the first rendered button,
   // which can be a pre-rendered row above the view (backwards: below it), and
   // the browser scrolls back to it. Start at the first (last) row in view.
@@ -436,7 +444,9 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
                         title={capacity.note ?? undefined}
                         data-person-id={row.id}
                         onFocus={(e) => {
-                          if (quietFocus.current) return
+                          const restored = e.relatedTarget === null && e.currentTarget === focusBeforeBlur.current
+                          focusBeforeBlur.current = null
+                          if (quietFocus.current || restored) return
                           if (!enterAtView(e.currentTarget, e.relatedTarget)) keepClearOfHeader(e.currentTarget)
                         }}
                         aria-expanded={isEditing}
@@ -544,11 +554,11 @@ function CapacityEditor(props: {
         aria-label={`Weekly hours for ${name}`}
         aria-describedby={capacity.note ? `${hintId} ${noteId}` : hintId}
         aria-invalid={error !== null}
-        type="number"
+        // Text, not a number field: a number field in a browser set to English
+        // drops a comma decimal ("12,5" became 125). Decimal keypad on phones.
+        type="text"
         inputMode="decimal"
-        min={0}
-        max={168}
-        step="any"
+        autoComplete="off"
         ref={inputRef}
         value={editing.draft}
         readOnly={editing.saving}

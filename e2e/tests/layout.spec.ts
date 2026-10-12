@@ -52,7 +52,7 @@ test('red text is readable in both themes, over-capacity numbers on their bar to
     await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
     await page.locator('.cap-button').first().evaluate((b) => b.insertAdjacentHTML('beforeend', '<span class="unconfirmed"> ?</span>'))
     await page.locator('.cap-button').nth(1).click()
-    await page.getByRole('spinbutton').fill('999')
+    await page.getByRole('textbox', { name: /Weekly hours for/ }).fill('999')
     await page.getByRole('button', { name: 'Save' }).click()
     await expect(page.locator('.cap-editor .hint.error')).toBeVisible()
     for (const selector of ['.summary .over-text', '.sub.over-text', '.cap-editor .hint.error', '.cap-button .unconfirmed']) {
@@ -268,8 +268,19 @@ test('the grid draws its marks: red over capacity, this week, the edited row, op
       other: cs('thead th.week:not(.current)').boxShadow,
       stickyName: cs('tbody th.name').backgroundColor,
       stickyHead: cs('thead th.week').backgroundColor,
+      fullBar: cs('td.alloc.full').backgroundImage,
     }
   })
+  // Each bar is drawn as long as its share of the capacity.
+  const bars = await page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>('tbody td.alloc')].slice(0, 30).map((td) => ({
+      fill: Number(td.style.getPropertyValue('--fill')),
+      drawn: getComputedStyle(td).backgroundImage.match(/\) (?:calc\()?([\d.]+)%\)?, rgba/)?.[1],
+    })),
+  )
+  expect(bars.some((b) => b.fill > 0 && b.fill < 1)).toBe(true)
+  for (const b of bars) expect(Number(b.drawn), JSON.stringify(b)).toBeCloseTo(b.fill * 100, 3)
+  expect(styles.fullBar).toMatch(/srgb 0\.07\d* 0\.50/)
   const red = (c: string) => {
     const [r, g, b] = c.match(/[\d.]+/g)!.map(Number)
     return r > g + 60 && r > b + 60
@@ -280,12 +291,67 @@ test('the grid draws its marks: red over capacity, this week, the edited row, op
   expect(styles.current).not.toBe('none')
   expect(styles.other).toBe('none')
   for (const key of ['stickyName', 'stickyHead'] as const) expect(styles[key], key).not.toMatch(/rgba\(0, 0, 0, 0\)|transparent/)
-  // The row being edited is highlighted.
-  const before = await page.locator('tbody tr').nth(1).evaluate((tr) => getComputedStyle(tr.children[2]).backgroundColor)
-  await page.locator('tbody tr').nth(1).locator('.cap-button').click()
+  // The row being edited is highlighted, week cells too, and its button outlined.
+  const row = page.locator('tbody tr').nth(1)
+  const before = await row.evaluate((tr) => [0, 2].map((i) => getComputedStyle(tr.children[i]).backgroundImage + getComputedStyle(tr.children[i]).backgroundColor))
+  await row.locator('.cap-button').click()
   await expect(page.locator('tr.editing')).toHaveCount(1)
-  const after = await page.locator('tr.editing').evaluate((tr) => getComputedStyle(tr.children[0]).backgroundColor)
-  expect(after).not.toBe(before)
+  const after = await page.locator('tr.editing').evaluate((tr) => [0, 2].map((i) => getComputedStyle(tr.children[i]).backgroundImage + getComputedStyle(tr.children[i]).backgroundColor))
+  expect(after[0]).not.toBe(before[0])
+  expect(after[1]).not.toBe(before[1])
+  await expect(page.locator('tr.editing .cap-button')).toHaveCSS('border-top-style', 'solid')
+  // Errors are red: the editor's message and its field's border, and the "?".
+  await page.getByRole('textbox', { name: /Weekly hours for/ }).fill('abc')
+  await page.getByRole('button', { name: 'Save' }).click()
+  const errors = await page.evaluate(() => {
+    document.querySelector('.cap-button')!.insertAdjacentHTML('beforeend', '<span class="unconfirmed"> ?</span>')
+    const cs = (sel: string) => getComputedStyle(document.querySelector(sel)!)
+    return [cs('.cap-editor .hint.error').color, cs('.cap-editor input[aria-invalid="true"]').borderTopColor, cs('.cap-button .unconfirmed').color]
+  })
+  for (const c of errors) expect(red(c), c).toBe(true)
+})
+
+// A failed load's banner is marked red.
+test('the banner of a failed load is drawn in red', async ({ page }) => {
+  await page.route('**/api/capacity**', (route) => route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"could not load capacity"}' }))
+  await page.goto(`/?from=${FIXTURE.from}&to=${FIXTURE.to}`)
+  const banner = page.locator('.banner')
+  await expect(banner).toBeVisible()
+  const [border, tint] = await banner.evaluate((b) => [getComputedStyle(b).borderTopColor, getComputedStyle(b).backgroundColor])
+  const [r, g, b] = border.match(/[\d.]+/g)!.map(Number)
+  expect(r > g + 60 && r > b + 60, border).toBe(true)
+  expect(tint).not.toMatch(/rgba\(0, 0, 0, 0\)/)
+})
+
+// When its window comes back, the browser gives focus back where it was, with
+// no relatedTarget, like Shift+Tab from its own UI: that is no step of the
+// manager's, and focus stays on the same person.
+test('focus given back when the window returns stays on the same person', async ({ page }) => {
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  const scroller = page.locator('.scroller')
+  await scroller.evaluate((el) => (el.scrollTop = 4400))
+  await expect.poll(() => scroller.evaluate((el) => el.scrollTop)).toBe(4400)
+  const id = (await buttonsInView(page))[1]
+  const button = page.locator(`.cap-button[data-person-id="${id}"]`)
+  await button.focus()
+  // Its row leaves the view but stays rendered.
+  await scroller.evaluate((el) => (el.scrollTop += 200))
+  await expect.poll(() => scroller.evaluate((el) => el.scrollTop)).toBe(4600)
+  await button.evaluate((b) => {
+    window.dispatchEvent(new Event('blur'))
+    ;(b as HTMLElement).blur()
+    ;(b as HTMLElement).focus({ preventScroll: true })
+  })
+  await expect(button).toBeFocused()
+})
+
+// The rows that stand in for the ones not rendered are hidden from screen readers.
+test('the spacer rows are hidden from screen readers', async ({ page }) => {
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  await page.locator('.scroller').evaluate((el) => (el.scrollTop = 3000))
+  const spacers = page.locator('tr.spacer')
+  await expect(spacers).toHaveCount(2)
+  for (const spacer of await spacers.all()) await expect(spacer).toHaveAttribute('aria-hidden', 'true')
 })
 
 // Scrolling a focused button's row out of the rendered window removes it:

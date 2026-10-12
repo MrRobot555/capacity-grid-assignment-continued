@@ -288,7 +288,7 @@ describe('when the row changed on the server', () => {
     )
     expect(server.hours[4]).toBe(30)
     expect(capButton('Dee Okafor')).toHaveTextContent(/^30h$/)
-    expect(screen.getByLabelText('Weekly hours for Dee Okafor')).toHaveValue(50)
+    expect(screen.getByLabelText('Weekly hours for Dee Okafor')).toHaveValue('50')
     expect(screen.getByRole('alert')).toHaveTextContent('Your value is kept here; save again to apply it.')
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
 
@@ -470,7 +470,7 @@ describe('the editor', () => {
     await edit('Dee Okafor', '50') // Dee is over, so visible
     fireEvent.change(screen.getByLabelText('Find person'), { target: { value: 'ana' } })
     expect(await screen.findByRole('alert')).toHaveTextContent('Not saved.')
-    expect(screen.getByLabelText('Weekly hours for Dee Okafor')).toHaveValue(50)
+    expect(screen.getByLabelText('Weekly hours for Dee Okafor')).toHaveValue('50')
   })
 
   it('survives a range change while a save is in flight, and shows its failure', async () => {
@@ -1856,7 +1856,7 @@ describe('a failed load', () => {
     await screen.findByText('Dee Okafor', { selector: 'th' })
   })
 
-  it('dims the grid while a range loads, and keeps the previous range dimmed when it fails', async () => {
+  it('marks the grid stale while a range loads, and keeps the previous range marked when it fails', async () => {
     fakeServer([])
     const { container, rerender } = renderGrid()
     await screen.findByText('Dee Okafor', { selector: 'th' })
@@ -1871,7 +1871,7 @@ describe('a failed load', () => {
     await screen.findByText(/still shows the previous range/)
     expect(scroller()).toHaveClass('stale')
 
-    // Back to the range the grid still shows: while it reloads, it is dimmed
+    // Back to the range the grid still shows: while it reloads, it is marked stale
     // for loading alone.
     nextRange(rerender)
     expect(scroller()).toHaveClass('stale')
@@ -1880,6 +1880,13 @@ describe('a failed load', () => {
 })
 
 describe('what the grid marks', () => {
+  it('saves a comma decimal as the number it means', async () => {
+    const server = fakeServer([])
+    renderGrid()
+    await edit('Dee Okafor', '12,5')
+    await waitFor(() => expect(server.hours[4]).toBe(12.5))
+  })
+
   it('says so when there is nobody at all', async () => {
     vi.stubGlobal(
       'fetch',

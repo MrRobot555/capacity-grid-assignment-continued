@@ -50,7 +50,7 @@ test('out-of-order responses: the last navigation wins and stays', async ({ page
   await expect(page.getByRole('alert')).toHaveCount(0)
 })
 
-test('slow load: "Still loading" while the previous grid stays, dimmed', async ({ page }) => {
+test('slow load: "Still loading" while the previous grid stays, marked stale', async ({ page }) => {
   await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
 
   await routeApi(page, async (route, req) => {
@@ -66,7 +66,7 @@ test('slow load: "Still loading" while the previous grid stays, dimmed', async (
   const status = page.getByRole('status')
   await expect(status).toHaveText('Loading…')
   await expect(status).toHaveText(/Still loading/, { timeout: 2400 })
-  // The previous range is still rendered, dimmed.
+  // The previous range is still rendered, marked stale.
   await expect(page.locator('.scroller')).toHaveClass(/\bstale\b/)
   await expectWeeks(page, FIXTURE_WEEKS)
   expect(await personRows(page).count()).toBeGreaterThan(0)

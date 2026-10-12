@@ -52,7 +52,7 @@ it('keeps the grid honest through a failed save and a successful retry', async (
 
   // Failed: the error is shown, the typed value is kept, the grid is unchanged.
   expect(await screen.findByRole('alert')).toHaveTextContent('could not update person')
-  expect(screen.getByLabelText('Weekly hours for Dee Okafor')).toHaveValue(50)
+  expect(screen.getByLabelText('Weekly hours for Dee Okafor')).toHaveValue('50')
   expect(within(dee).getByText('+5')).toBeInTheDocument()
   expect(firstWeekHeader).toHaveTextContent('1 over')
 

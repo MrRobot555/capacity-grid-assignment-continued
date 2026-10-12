@@ -341,4 +341,10 @@ describe('parseWeeklyHours', () => {
     expect(parseWeeklyHours('-0.01')).toBeTypeOf('string')
     expect(parseWeeklyHours('abc')).toBeTypeOf('string')
   })
+
+  it('takes a comma decimal as well as a point, and plain decimals only', () => {
+    expect(parseWeeklyHours('12,5')).toBe(12.5)
+    expect(parseWeeklyHours(' 37,5 ')).toBe(37.5)
+    for (const text of ['1,000.5', '1,2,3', '0x10', '1e1', '12 5', '+5', '.']) expect(parseWeeklyHours(text), text).toBeTypeOf('string')
+  })
 })

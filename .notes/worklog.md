@@ -282,3 +282,9 @@ left unfinished. Append as you go; a line or two per entry is right.
 
 - The adversarial reviewer found two Lows, both in round 24's Tab entry: the open editor's disabled button could be "the first in view", and Shift+Tab from the browser (no `relatedTarget`) was never handled. A `.focus()` call in a test isn't a keyboard step; the R22-A4 test now uses Shift+Tab.
 - Vitest can't see CSS, and the contrast test measured readability, not redness: the marks that make over-allocation obvious were ungated. An e2e test now reads them from the computed styles.
+
+## Review round 26 → focus restores, comma decimals, the stylesheet read back
+
+- "No relatedTarget means Shift+Tab from the browser" was false: a window regaining focus looks the same. The grid now remembers what had focus at window blur and leaves a focus given back to it alone.
+- A number field in an English browser drops a comma decimal ("12,5" → 125). The editor is a text field with a decimal keypad; parsing takes one comma or point and plain decimals only.
+- The marks test now reads bar lengths, the green bar, every red mark and the edited row's highlight from computed styles; the highlight now covers the week cells, as its rule meant.
