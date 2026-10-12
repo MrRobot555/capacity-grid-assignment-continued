@@ -288,3 +288,8 @@ left unfinished. Append as you go; a line or two per entry is right.
 - "No relatedTarget means Shift+Tab from the browser" was false: a window regaining focus looks the same. The grid now remembers what had focus at window blur and leaves a focus given back to it alone.
 - A number field in an English browser drops a comma decimal ("12,5" → 125). The editor is a text field with a decimal keypad; parsing takes one comma or point and plain decimals only.
 - The marks test now reads bar lengths, the green bar, every red mark and the edited row's highlight from computed styles; the highlight now covers the week cells, as its rule meant.
+
+## Review round 27 → a threshold against oscillation
+
+- The owner set the threshold to defects a user can perceive: rounds 20–27 had hovered at 8–10 findings with no High, each small fix opening a new edge and the gate audit finding more ungated stylesheet rules. The gate audit of round 27 was stopped before it reported; its leftovers were removed.
+- Round 27's three perceptible Lows all came from round 26's switch to a text field: an orphaned width rule, "1,000" read as one hour (now asked about), and the editor refusing its own "1e-7" draft (now a plain decimal).

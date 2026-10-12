@@ -300,6 +300,8 @@ test('the grid draws its marks: red over capacity, this week, the edited row, op
   expect(after[0]).not.toBe(before[0])
   expect(after[1]).not.toBe(before[1])
   await expect(page.locator('tr.editing .cap-button')).toHaveCSS('border-top-style', 'solid')
+  // The hours field is sized for hours, not the browser's default text width.
+  await expect(page.getByRole('textbox', { name: /Weekly hours for/ })).toHaveCSS('width', '96px')
   // Errors are red: the editor's message and its field's border, and the "?".
   await page.getByRole('textbox', { name: /Weekly hours for/ }).fill('abc')
   await page.getByRole('button', { name: 'Save' }).click()

@@ -1,7 +1,8 @@
 # Next steps: resuming the review cycle
 
-Last completed: **review round 26** (all of its findings fixed, committed and
-pushed). Next: **round 27**: run the two reviewers with the briefs below,
+Last completed: **review round 27** (all of its findings fixed, committed and
+pushed). Next: **round 28**: a review for user-perceptible defects only; a round
+with none closes the cycle (the owner's threshold, 2026-10-12): run the two reviewers with the briefs below,
 updated to HEAD and to the last round's changes.
 
 ## Where things are
@@ -14,7 +15,7 @@ updated to HEAD and to the last round's changes.
 | Register | `.notes/review-register.md`: every finding with a verdict, plus the Recurrence table. |
 | Narrative | `.notes/worklog.md` (append only), `CONTINUED.md`, `SCAFFOLD-FINDINGS.md`. |
 
-Findings per round: 23 → 18 → 14 → 9 → 23 → 13 → 6 → 14 → 9 → 16 → 9 → 11 → 8 → 9 → 5 → 8 → 4 → 7 → 11 → 5 → 10 → 13 → 16 → 10 → 8 → 10. Round 5's rise
+Findings per round: 23 → 18 → 14 → 9 → 23 → 13 → 6 → 14 → 9 → 16 → 9 → 11 → 8 → 9 → 5 → 8 → 4 → 7 → 11 → 5 → 10 → 13 → 16 → 10 → 8 → 10 → 3. Round 5's rise
 taught the counting rule below; since then the design has been simplified, not
 grown.
 
@@ -29,7 +30,7 @@ grown.
 5. **Every fix gets a gate, and every gate is checked:** it must fail on the pre-fix code, or kill the mutant it targets. Then run the half-migration grep: did the removed concept actually go away, or just move?
 6. **After every round:** all suites green, the seed intact, then **commit and push** to the continuation repo.
 7. **Then the convergence report to the owner, before the next reviewers start** (owner, 2026-10-10): a table per round (findings, High/Medium/Low from the register, what changed) and what it means: converged or not, what is improving, what keeps recurring.
-8. A cycle closes only when a round returns **zero** findings. Reviewers are told not to invent findings to avoid saying "converged".
+8. A cycle closes only when a round returns **zero** findings. **Since 2026-10-12 (owner): zero user-perceptible defects.** Gate gaps, vacuous tests and cosmetic CSS mutants are follow-ups, not round-openers; each fix still gets a gate checked against its mutant. Reviewers are told not to invent findings to avoid saying "converged".
 
 ## Hard-won rules for running it
 

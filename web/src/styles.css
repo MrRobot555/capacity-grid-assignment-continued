@@ -271,7 +271,7 @@ thead .cap {
   background: var(--bg);
 }
 
-.cap-editor input[type='number'] {
+.cap-editor input {
   width: 6rem;
 }
 

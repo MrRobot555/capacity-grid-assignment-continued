@@ -347,4 +347,12 @@ describe('parseWeeklyHours', () => {
     expect(parseWeeklyHours(' 37,5 ')).toBe(37.5)
     for (const text of ['1,000.5', '1,2,3', '0x10', '1e1', '12 5', '+5', '.']) expect(parseWeeklyHours(text), text).toBeTypeOf('string')
   })
+
+  it('asks about a comma before exactly three digits instead of reading it as a decimal', () => {
+    expect(parseWeeklyHours('1,000')).toMatch(/thousands separator/)
+    expect(parseWeeklyHours('37,500')).toMatch(/thousands separator/)
+    expect(parseWeeklyHours('37,50')).toBe(37.5)
+    expect(parseWeeklyHours('1.000')).toBe(1)
+    expect(parseWeeklyHours('-0')).toBe(0)
+  })
 })

@@ -1880,6 +1880,21 @@ describe('a failed load', () => {
 })
 
 describe('what the grid marks', () => {
+  it('opens on a tiny stored value as a plain decimal, and closes on it as unchanged', async () => {
+    const server = fakeServer([])
+    const { rerender } = renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    server.changeElsewhere(4, 1e-7)
+    nextRange(rerender)
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^0h$/))
+    fireEvent.click(capButton('Dee Okafor'))
+    const input = screen.getByLabelText('Weekly hours for Dee Okafor')
+    expect(input).toHaveValue('0.0000001')
+    fireEvent.submit(input.closest('form')!)
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    expect(server.patches()).toHaveLength(0)
+  })
+
   it('saves a comma decimal as the number it means', async () => {
     const server = fakeServer([])
     renderGrid()

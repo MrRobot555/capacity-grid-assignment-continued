@@ -216,7 +216,7 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
 
   function openEditor(id: number) {
     const base = { id, ...people[id] }
-    setEditing({ id, base, draft: String(base.weeklyHours), saving: false, invalid: null, failure: null })
+    setEditing({ id, base, draft: plainNumber(base.weeklyHours), saving: false, invalid: null, failure: null })
   }
 
   function closeEditor() {
@@ -534,8 +534,8 @@ function CapacityEditor(props: {
     <form
       className="cap-editor"
       aria-label={`Edit weekly hours for ${name}`}
-      // The app validates (parseWeeklyHours) and says why in the hint. Native
-      // validation would block the submit on max={168} and show its own popup.
+      // The app validates (parseWeeklyHours) and says why in the hint, not the
+      // browser in a popup of its own.
       noValidate
       onSubmit={(e) => {
         e.preventDefault()
@@ -744,6 +744,13 @@ type Outcome = { text: string; retry: boolean; error: boolean }
 /** Text that may lack a full stop, as one sentence. */
 function sentence(text: string): string {
   return /[.!?)]$/.test(text) ? text : `${text}.`
+}
+
+/** A number as a plain decimal, never in exponent form ("1e-7"), which the
+ * editor's own parsing refuses. */
+function plainNumber(n: number): string {
+  const text = String(n)
+  return text.includes('e') ? n.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 20 }) : text
 }
 
 function errorText(err: unknown): string {
