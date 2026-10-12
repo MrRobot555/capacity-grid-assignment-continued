@@ -153,6 +153,18 @@ func TestCapacityRejectsBadRanges(t *testing.T) {
 	}
 }
 
+// A well-formed but impossible date is refused as such, not as a bad format.
+func TestCapacityNamesAnImpossibleDate(t *testing.T) {
+	s := testServer(t)
+	rec := do(t, s, "GET", "/api/capacity?from=2026-02-30&to=2026-03-08", "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400", rec.Code)
+	}
+	if msg := decodeBody(t, rec)["error"]; msg != "from must be a real date, as YYYY-MM-DD" {
+		t.Errorf("error %q", msg)
+	}
+}
+
 // Year 1 is the first the API serves ("years 0001 to 9999"): only year 0 is refused.
 func TestCapacityServesYearOne(t *testing.T) {
 	s := testServer(t)
@@ -448,8 +460,13 @@ func TestUpdatePersonDoesNotLogAConflict(t *testing.T) {
 	s := testServer(t)
 	restoreCem(t, s)
 	logs := captureLog(t)
-	if rec := patchIfMatch(t, s, "3", "1", `{"weeklyHours": 21}`); rec.Code != http.StatusPreconditionFailed {
+	rec := patchIfMatch(t, s, "3", "1", `{"weeklyHours": 21}`)
+	if rec.Code != http.StatusPreconditionFailed {
 		t.Fatalf("status %d, want 412", rec.Code)
+	}
+	// Only the row's version is known to have moved, not its weekly hours.
+	if msg := decodeBody(t, rec)["error"]; msg != "the row was changed on the server since it was loaded" {
+		t.Errorf("412 error %q", msg)
 	}
 	if logs.Len() != 0 {
 		t.Errorf("a conflict was logged: %q", logs.String())

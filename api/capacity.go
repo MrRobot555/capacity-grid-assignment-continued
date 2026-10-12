@@ -89,12 +89,12 @@ ORDER BY p.name, p.id`
 func (s *server) handleCapacity(w http.ResponseWriter, r *http.Request) {
 	from, err := time.Parse(dateLayout, r.URL.Query().Get("from"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "from must be a date in YYYY-MM-DD format")
+		writeError(w, http.StatusBadRequest, "from must be a real date, as YYYY-MM-DD")
 		return
 	}
 	to, err := time.Parse(dateLayout, r.URL.Query().Get("to"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "to must be a date in YYYY-MM-DD format")
+		writeError(w, http.StatusBadRequest, "to must be a real date, as YYYY-MM-DD")
 		return
 	}
 	// Year 0 parses, but its Monday is in year -1, which isn't YYYY-MM-DD.

@@ -743,7 +743,10 @@ type Outcome = { text: string; retry: boolean; error: boolean }
 
 /** Text that may lack a full stop, as one sentence. */
 function sentence(text: string): string {
-  return /[.!?)]$/.test(text) ? text : `${text}.`
+  // The API's messages are lowercase, made to follow a colon; after the app's
+  // own full stop they start a sentence.
+  const capitalised = text.charAt(0).toUpperCase() + text.slice(1)
+  return /[.!?)]$/.test(capitalised) ? capitalised : `${capitalised}.`
 }
 
 /** A number as a plain decimal, never in exponent form ("1e-7"), which the

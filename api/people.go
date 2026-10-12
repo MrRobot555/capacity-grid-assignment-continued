@@ -194,7 +194,8 @@ func saveErrorResponse(err error) (int, map[string]any) {
 		}
 	case errors.As(err, &stale):
 		return http.StatusPreconditionFailed, map[string]any{
-			"error":   "the weekly hours were changed on the server since they were loaded",
+			// The row's version moved; its weekly hours may be the same.
+			"error":   "the row was changed on the server since it was loaded",
 			"current": stale.current,
 		}
 	case errors.Is(err, pgx.ErrNoRows):

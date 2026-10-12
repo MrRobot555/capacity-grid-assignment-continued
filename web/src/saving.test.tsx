@@ -67,7 +67,7 @@ function fakeServer(outcomes: Outcome[]) {
     }
     if (outcome === 'hold-then-check') await new Promise<void>((resolve) => (release = resolve))
     if (ifMatch !== row(id).version) {
-      const conflict = json(412, { error: 'the weekly hours were changed on the server since they were loaded', current: row(id) })
+      const conflict = json(412, { error: 'the row was changed on the server since it was loaded', current: row(id) })
       if (outcome === 'check-then-hold') await new Promise<void>((resolve) => (release = resolve))
       return conflict
     }
@@ -169,7 +169,7 @@ describe('what a failed save says', () => {
     const server = fakeServer(['refuse'])
     renderGrid()
     await edit('Dee Okafor', '50')
-    expect(await screen.findByRole('alert')).toHaveTextContent('Not saved. could not update person')
+    expect(await screen.findByRole('alert')).toHaveTextContent('Not saved. Could not update person')
     expect(server.patches()).toHaveLength(1)
   })
 
@@ -254,7 +254,7 @@ describe('what a failed save says', () => {
     renderGrid()
     await edit('Dee Okafor', '50')
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      /^Something went wrong while saving: boom\. Saving again is safe\.$/,
+      /^Something went wrong while saving: Boom\. Saving again is safe\.$/,
     )
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
@@ -490,7 +490,7 @@ describe('the editor', () => {
     await screen.findByRole('button', { name: 'Saving…' })
     rerender(<CapacityGrid from="2026-01-12" to="2026-01-25" onRangeChange={() => {}} />)
     await act(async () => failSave())
-    expect(await screen.findByRole('alert')).toHaveTextContent('Not saved. could not update person')
+    expect(await screen.findByRole('alert')).toHaveTextContent('Not saved. Could not update person')
     expect(server.patches()).toHaveLength(1)
   })
 
@@ -603,8 +603,8 @@ describe('after an earlier save of the person was left unconfirmed', () => {
     await edit('Dee Okafor', '50')
     await screen.findByText(/Couldn't confirm the save of 50h/)
     await edit('Dee Okafor', '26')
-    const alert = await screen.findByText(/Not saved. could not update person/)
-    expect(alert).toHaveTextContent('could not update person. Your earlier save of 50h is still unconfirmed.')
+    const alert = await screen.findByText(/Not saved. Could not update person/)
+    expect(alert).toHaveTextContent('Could not update person. Your earlier save of 50h is still unconfirmed.')
     expect(alert).not.toHaveTextContent('may or may not')
     expect(capButton('Dee Okafor')).toHaveTextContent('40h ?')
   })
@@ -1593,7 +1593,7 @@ describe('when the server ends up holding the typed value after a definite failu
     const server = fakeServer(['refuse'])
     const { rerender } = renderGrid()
     await edit('Dee Okafor', '50')
-    await screen.findByText(/Not saved. could not update person/)
+    await screen.findByText(/Not saved. Could not update person/)
     server.changeElsewhere(4, 50)
     nextRange(rerender)
     await waitFor(() =>
@@ -1677,7 +1677,7 @@ describe('earlier doubtful saves in the messages', () => {
     await edit('Dee Okafor', '60')
     await screen.findByText(/Couldn't confirm the save of 60h/)
     await edit('Dee Okafor', '26')
-    expect(await screen.findByText(/Not saved. could not update person/)).toHaveTextContent(
+    expect(await screen.findByText(/Not saved. Could not update person/)).toHaveTextContent(
       'Your earlier save of 50h or 60h is still unconfirmed.',
     )
   })
@@ -1717,7 +1717,7 @@ describe('saving again after a refusal or an unexpected error that a load then e
     const server = fakeServer(['refuse'])
     const { rerender } = renderGrid()
     await edit('Dee Okafor', '50')
-    await screen.findByText(/Not saved. could not update person/)
+    await screen.findByText(/Not saved. Could not update person/)
     server.changeElsewhere(4, 30)
     nextRange(rerender)
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('(now 30h)'))
@@ -1818,7 +1818,7 @@ describe('a failed load', () => {
       }),
     )
     renderGrid()
-    expect(await screen.findByRole('alert')).toHaveTextContent("the database didn't respond in time.")
+    expect(await screen.findByRole('alert')).toHaveTextContent("The database didn't respond in time.")
   })
 
   it('ends a load that gets no answer, and offers Retry', async () => {

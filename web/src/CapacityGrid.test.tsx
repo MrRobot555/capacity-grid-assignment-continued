@@ -51,7 +51,7 @@ it('keeps the grid honest through a failed save and a successful retry', async (
   fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
   // Failed: the error is shown, the typed value is kept, the grid is unchanged.
-  expect(await screen.findByRole('alert')).toHaveTextContent('could not update person')
+  expect(await screen.findByRole('alert')).toHaveTextContent('Could not update person')
   expect(screen.getByLabelText('Weekly hours for Dee Okafor')).toHaveValue('50')
   expect(within(dee).getByText('+5')).toBeInTheDocument()
   expect(firstWeekHeader).toHaveTextContent('1 over')
@@ -109,7 +109,7 @@ it('does not let a second edit start while a save is in flight', async () => {
   expect(within(ana).getByRole('button', { name: /Weekly hours for Ana Ferreira/ })).toBeDisabled()
 
   failSave(json(500, { error: 'could not update person' }))
-  expect(await screen.findByRole('alert')).toHaveTextContent('Not saved. could not update person')
+  expect(await screen.findByRole('alert')).toHaveTextContent('Not saved. Could not update person')
 })
 
 // Rows are virtualised, so the browser's find-in-page can't reach most names.
