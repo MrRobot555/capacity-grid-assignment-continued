@@ -255,3 +255,11 @@ left unfinished. Append as you go; a line or two per entry is right.
 
 - No High again. The adversarial reviewer went where earlier rounds hadn't: red text measured 3.0–3.9:1 against WCAG's 4.5 (now its own colour per theme), a 390px screen showed no weeks (narrower names below 40rem), and every abandoned load and 412 was logged as an error (now only failures are).
 - The two log tests had used a cancelled request to force a failure, which is now the "client went away" case; they use an expired deadline instead.
+
+## Review round 22 → time limits, focus, print, and a process slip
+
+- Round 21 changed the API but its e2e run used the container built before: Playwright tests the running containers, not the source. Rebuilt, and the rule is now in next-steps and e2e/README.
+- A load had no time limit anywhere; one stuck behind a lock loaded forever. Now 10 s in the API (503, logged) and 15 s in the client (banner with Retry). A timeout is recognised by its name: jsdom's DOMException isn't the test realm's.
+- Focus: Chrome scrolls a focused element in only when it is wholly out of view and ignores sticky rows, so neither scroll-padding nor scroll-margin keeps a focused button out from under the sticky header. The grid corrects it on the next frame, after the browser's own scroll. A focused row scrolled out of the window would drop focus to the page; it now moves to the grid.
+- Printing renders every row (beforeprint, synchronously); the current week has aria-current and a forced-colours outline; past 52 weeks headers name the year.
+- The contrast test now measures contrast, not a colour value, for every red text.

@@ -57,12 +57,20 @@ export function isDefiniteFailure(err: unknown): boolean {
  */
 export const SAVE_TIMEOUT_MS = 15_000
 
+/**
+ * How long a load waits. The API gives up on a load after 10 s (loadTimeout in
+ * api/capacity.go) and says so; this ends one that gets no answer at all, so
+ * the grid can offer Retry. (An object, so tests can shorten it.)
+ */
+export const loadTiming = { timeoutMs: SAVE_TIMEOUT_MS }
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   let res: Response
   try {
     res = await fetch(url, init)
   } catch (err) {
-    if (err instanceof DOMException && err.name === 'TimeoutError') {
+    // By name: the error may come from another realm's DOMException.
+    if ((err as { name?: unknown } | null)?.name === 'TimeoutError') {
       throw new ApiError(`The server didn't answer within ${SAVE_TIMEOUT_MS / 1000} seconds.`)
     }
     if (init?.signal?.aborted) throw err
@@ -81,7 +89,21 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export function fetchCapacity(from: ISODate, to: ISODate, signal?: AbortSignal) {
-  return request<CapacityResponse>(`/api/capacity?from=${from}&to=${to}`, { signal })
+  return request<CapacityResponse>(`/api/capacity?from=${from}&to=${to}`, {
+    signal: withTimeout(signal, loadTiming.timeoutMs),
+  })
+}
+
+/** `signal`, also aborted (as a timeout) after `ms`. */
+function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
+  const timeout = AbortSignal.timeout(ms)
+  if (!signal) return timeout
+  const both = new AbortController()
+  for (const s of [signal, timeout]) {
+    if (s.aborted) both.abort(s.reason)
+    else s.addEventListener('abort', () => both.abort(s.reason), { once: true })
+  }
+  return both.signal
 }
 
 /**

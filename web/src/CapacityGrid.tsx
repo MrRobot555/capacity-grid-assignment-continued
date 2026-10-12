@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type UIEvent } from 'react'
+import { flushSync } from 'react-dom'
 import type { Person } from './api'
 import {
   allocationStatus,
@@ -131,6 +132,38 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
   const windowEnd = Math.min(visible.length, last)
   const windowStart = Math.min(first, windowEnd)
   const showingOtherRange = data !== null && data.key !== rangeKey(from, to)
+  // Past a year, a day and month alone repeat ("12 Oct" twice): show the year.
+  const weekLabel = (data?.weeks.length ?? 0) > 52 ? formatLong : formatShort
+
+  // A focused capacity button whose row scrolls out of the window is removed,
+  // and focus would fall to the page: keep it in the grid instead.
+  const focusedButton = useRef<number | null>(null)
+  useEffect(() => {
+    const track = (e: FocusEvent) => {
+      const id = (e.target as HTMLElement).closest?.('button[data-person-id]')?.getAttribute('data-person-id')
+      focusedButton.current = id ? Number(id) : null
+    }
+    document.addEventListener('focusin', track)
+    return () => document.removeEventListener('focusin', track)
+  }, [])
+  // The browser scrolls a focused button into view ignoring the sticky header
+  // row, so it can land under it. Corrected after the browser's own scroll,
+  // which comes after the focus event.
+  const keepClearOfHeader = (button: HTMLElement) =>
+    requestAnimationFrame(() => {
+      const scroller = scrollerRef.current
+      const header = scroller?.querySelector('thead th')
+      if (!scroller || !header || !button.isConnected) return
+      const hidden = header.getBoundingClientRect().bottom - button.getBoundingClientRect().top
+      if (hidden > 0) scroller.scrollTop -= hidden
+    })
+  useLayoutEffect(() => {
+    const id = focusedButton.current
+    if (id === null || document.activeElement !== document.body) return
+    if (scrollerRef.current?.querySelector(`button[data-person-id="${id}"]`)) return
+    focusedButton.current = null
+    scrollerRef.current?.focus({ preventScroll: true })
+  })
   const editingPerson = editing ? people[editing.id] : undefined
 
   useEffect(() => {
@@ -317,8 +350,13 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
                   <span className="sub">h / week</span>
                 </th>
                 {data.weeks.map((week, i) => (
-                  <th scope="col" key={week} className={week === thisWeek ? 'week current' : 'week'}>
-                    {formatShort(week)}
+                  <th
+                    scope="col"
+                    key={week}
+                    className={week === thisWeek ? 'week current' : 'week'}
+                    aria-current={week === thisWeek ? 'date' : undefined}
+                  >
+                    {weekLabel(week)}
                     <span className={overByWeek[i] ? 'sub over-text' : 'sub'}>
                       {overByWeek[i] ? `${overByWeek[i]} over` : 'none over'}
                     </span>
@@ -364,6 +402,7 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
                         }
                         title={capacity.note ?? undefined}
                         data-person-id={row.id}
+                        onFocus={(e) => keepClearOfHeader(e.currentTarget)}
                         aria-expanded={isEditing}
                         // While a save is in flight (including its repeats) its editor
                         // must stay open, or its outcome would have nowhere to be shown.
@@ -378,7 +417,7 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
                       <AllocationCell
                         key={data.weeks[i]}
                         name={row.name}
-                        week={data.weeks[i]}
+                        week={weekLabel(data.weeks[i])}
                         allocated={allocated}
                         capacity={row.weeklyHours}
                         capacityView={capacity}
@@ -399,7 +438,8 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
 
 function AllocationCell(props: {
   name: string
-  week: ISODate
+  /** The week as its header names it. */
+  week: string
   allocated: number
   capacity: number
   capacityView: CapacityView
@@ -410,7 +450,7 @@ function AllocationCell(props: {
   const over = (hundredths(allocated) - hundredths(capacity)) / 100
   const fill = capacity > 0 ? Math.min(allocated / capacity, 1) : allocated > 0 ? 1 : 0
   const title =
-    `${name}, week of ${formatShort(week)}: ${hours(allocated)} allocated of ${capacityView.text}` +
+    `${name}, week of ${week}: ${hours(allocated)} allocated of ${capacityView.text}` +
     (capacityView.certain ? '' : ' (capacity not confirmed)') +
     (status === 'over' ? ` (${hours(over)} over)` : '')
   return (
@@ -519,6 +559,19 @@ function useRowWindow() {
   const [scrollTop, setScrollTop] = useState(0)
   const [height, setHeight] = useState(800)
   const [rowHeight, setRowHeight] = useState(ROW_HEIGHT_GUESS)
+  // Printing prints what is rendered: every row then, not the window.
+  const [printing, setPrinting] = useState(false)
+  useEffect(() => {
+    // Synchronously, before the browser lays the page out for printing.
+    const before = () => flushSync(() => setPrinting(true))
+    const after = () => setPrinting(false)
+    window.addEventListener('beforeprint', before)
+    window.addEventListener('afterprint', after)
+    return () => {
+      window.removeEventListener('beforeprint', before)
+      window.removeEventListener('afterprint', after)
+    }
+  }, [])
 
   useLayoutEffect(() => {
     const el = scrollerRef.current
@@ -540,8 +593,8 @@ function useRowWindow() {
   return {
     scrollerRef,
     rowHeight,
-    first: Math.max(0, Math.floor(scrollTop / rowHeight) - OVERSCAN),
-    last: Math.ceil((scrollTop + height) / rowHeight) + OVERSCAN,
+    first: printing ? 0 : Math.max(0, Math.floor(scrollTop / rowHeight) - OVERSCAN),
+    last: printing ? Infinity : Math.ceil((scrollTop + height) / rowHeight) + OVERSCAN,
     onScroll: (e: UIEvent<HTMLDivElement>) => setScrollTop(e.currentTarget.scrollTop),
   }
 }

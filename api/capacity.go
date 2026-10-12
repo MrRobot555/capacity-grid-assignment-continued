@@ -113,14 +113,22 @@ func (s *server) handleCapacity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	people, err := loadCapacity(r.Context(), s.db, weeks)
+	// A load must end, e.g. one queued behind a lock: the grid then gets an
+	// answer it can offer Retry on, before its own limit.
+	ctx, cancel := context.WithTimeout(r.Context(), loadTimeout)
+	defer cancel()
+	people, err := loadCapacity(ctx, s.db, weeks)
 	if err != nil {
-		// The client went away (the grid moved on to another range): nothing
-		// failed, and nobody is left to answer.
-		if errors.Is(r.Context().Err(), context.Canceled) {
+		// A load the client gave up on (the grid moved on to another range) is
+		// not a failure to log. It is still answered: a client that only closed
+		// its sending side is reading.
+		if !errors.Is(r.Context().Err(), context.Canceled) {
+			log.Printf("load capacity %s..%s: %v", weeks[0].Format(dateLayout), weeks[len(weeks)-1].Format(dateLayout), err)
+		}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			writeError(w, http.StatusServiceUnavailable, "the database didn't respond in time")
 			return
 		}
-		log.Printf("load capacity %s..%s: %v", weeks[0].Format(dateLayout), weeks[len(weeks)-1].Format(dateLayout), err)
 		writeError(w, http.StatusInternalServerError, "could not load capacity")
 		return
 	}
@@ -131,6 +139,9 @@ func (s *server) handleCapacity(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
+
+// loadTimeout bounds a load in the API, shorter than the client's 15 s.
+var loadTimeout = 10 * time.Second
 
 // querier is satisfied by both the pool and a transaction, so tests can run
 // the query against synthetic rows and roll them back.

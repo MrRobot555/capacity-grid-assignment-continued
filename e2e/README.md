@@ -14,6 +14,9 @@ npx playwright install chromium   # only if the browser is not cached yet
 npx playwright test               # add --reporter=list for a plain log
 ```
 
+The suite runs against the containers, not the source: after changing `api/`,
+rebuild the API first (`docker compose up -d --build api`).
+
 Tests run serially (one worker), against the live database. Most saves are
 mocked; the tests that write for real all use Cem Aydin (id 3) and restore his
 weekly hours to 20 afterwards: the real save round trip, the two lost-answer

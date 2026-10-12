@@ -300,8 +300,8 @@ func TestCapacityLogsWhyItFailed(t *testing.T) {
 	req := httptest.NewRequest("GET", "/api/capacity?from=2026-01-05&to=2026-01-11", nil).WithContext(ctx)
 	rec := httptest.NewRecorder()
 	s.routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status %d, want 500", rec.Code)
+	if rec.Code < 500 {
+		t.Fatalf("status %d, want a server failure (5xx)", rec.Code)
 	}
 	if !strings.Contains(logs.String(), "load capacity 2026-01-05..2026-01-05") {
 		t.Errorf("the failure was not logged; log output: %q", logs.String())
@@ -315,9 +315,47 @@ func TestCapacityDoesNotLogAnAbandonedLoad(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	req := httptest.NewRequest("GET", "/api/capacity?from=2026-01-05&to=2026-01-11", nil).WithContext(ctx)
-	s.routes().ServeHTTP(httptest.NewRecorder(), req)
+	rec := httptest.NewRecorder()
+	s.routes().ServeHTTP(rec, req)
 	if logs.Len() != 0 {
 		t.Errorf("an abandoned load was logged: %q", logs.String())
+	}
+	// Still answered: a client that only half-closed the connection is reading.
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status %d, want 500, not an empty success", rec.Code)
+	}
+}
+
+// A load queued behind a lock ends at the API's deadline with a reason, and
+// leaves a trace in the log.
+func TestCapacityGivesUpBehindALock(t *testing.T) {
+	s := testServer(t)
+	ctx := context.Background()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `LOCK TABLE assignments IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	saved := loadTimeout
+	loadTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { loadTimeout = saved })
+	logs := captureLog(t)
+
+	start := time.Now()
+	rec := do(t, s, "GET", "/api/capacity?from=2026-01-05&to=2026-01-11", "")
+	if took := time.Since(start); took > 3*time.Second {
+		t.Errorf("took %v; it should give up at the deadline", took)
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status %d, want 503: %s", rec.Code, rec.Body)
+	} else if msg := decodeBody(t, rec)["error"]; msg != "the database didn't respond in time" {
+		t.Errorf("error %q", msg)
+	}
+	if !strings.Contains(logs.String(), "load capacity 2026-01-05..2026-01-05") {
+		t.Errorf("the failure was not logged; log output: %q", logs.String())
 	}
 }
 
@@ -354,6 +392,26 @@ func TestUpdatePersonLogsWhyItFailed(t *testing.T) {
 	s.routes().ServeHTTP(rec, req)
 	if rec.Code < 500 {
 		t.Fatalf("status %d, want a server failure (5xx)", rec.Code)
+	}
+	if !strings.Contains(logs.String(), "update person 3:") {
+		t.Errorf("the failure was not logged; log output: %q", logs.String())
+	}
+}
+
+// A save that fails for another reason than a deadline (here: no database) is
+// a 500, and leaves a trace in the log too.
+func TestUpdatePersonLogsAFailedSave(t *testing.T) {
+	testServer(t) // skips without a database
+	logs := captureLog(t)
+	db, err := pgxpool.New(context.Background(), os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close() // every query now fails at once
+	rec := httptest.NewRecorder()
+	newServer(db).routes().ServeHTTP(rec, httptest.NewRequest("PATCH", "/api/people/3", strings.NewReader(`{"weeklyHours": 21}`)))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status %d, want 500: %s", rec.Code, rec.Body)
 	}
 	if !strings.Contains(logs.String(), "update person 3:") {
 		t.Errorf("the failure was not logged; log output: %q", logs.String())
@@ -448,6 +506,7 @@ func TestLostCommitIsUnknownAndARepeatSettlesIt(t *testing.T) {
 			version := versionOf(t, s, 3)
 
 			proxied := newServer(proxiedPool(t, tc.mode))
+			logs := captureLog(t)
 			start := time.Now()
 			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 			defer cancel()
@@ -460,6 +519,9 @@ func TestLostCommitIsUnknownAndARepeatSettlesIt(t *testing.T) {
 			}
 			if body := decodeBody(t, rec); body["stored"] != "unknown" {
 				t.Fatalf("the outcome of COMMIT was lost, so the answer must be stored: unknown; got %d %v", rec.Code, body)
+			}
+			if !strings.Contains(logs.String(), "update person 3:") {
+				t.Errorf("a save of unknown outcome was not logged; log output: %q", logs.String())
 			}
 
 			repeat := patchIfMatch(t, s, "3", version, `{"weeklyHours": 33}`)

@@ -1,7 +1,7 @@
 # Next steps: resuming the review cycle
 
-Last completed: **review round 21** (all of its findings fixed, committed and
-pushed). Next: **round 22**: run the two reviewers with the briefs below,
+Last completed: **review round 22** (all of its findings fixed, committed and
+pushed). Next: **round 23**: run the two reviewers with the briefs below,
 updated to HEAD and to the last round's changes.
 
 ## Where things are
@@ -14,7 +14,7 @@ updated to HEAD and to the last round's changes.
 | Register | `.notes/review-register.md`: every finding with a verdict, plus the Recurrence table. |
 | Narrative | `.notes/worklog.md` (append only), `CONTINUED.md`, `SCAFFOLD-FINDINGS.md`. |
 
-Findings per round: 23 → 18 → 14 → 9 → 23 → 13 → 6 → 14 → 9 → 16 → 9 → 11 → 8 → 9 → 5 → 8 → 4 → 7 → 11 → 5 → 10. Round 5's rise
+Findings per round: 23 → 18 → 14 → 9 → 23 → 13 → 6 → 14 → 9 → 16 → 9 → 11 → 8 → 9 → 5 → 8 → 4 → 7 → 11 → 5 → 10 → 13. Round 5's rise
 taught the counting rule below; since then the design has been simplified, not
 grown.
 
@@ -33,6 +33,7 @@ grown.
 
 ## Hard-won rules for running it
 
+- **Rebuild the API before any e2e run after a change to `api/`** (`docker compose up -d --build api`, then check its age with `docker compose ps api`). Playwright runs against the container, not the source: in round 21 it ran on the old binary.
 - **Only one agent runs the shared-database suites (Go, Playwright) at a time.** The other probes persons ≥ 6. Parallel runs caused false failures and stomped on each other's probes.
 - **After every mutant run**, diff all 500 people against `db/seed.sql` and restore any difference. Mutants let writes through that the real code refuses (round 5 left person 10 at 22).
 - **Every test that writes a person restores it** in `t.Cleanup`.

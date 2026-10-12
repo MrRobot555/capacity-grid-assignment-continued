@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactElement } from 'react'
 import { CapacityGrid } from './CapacityGrid'
+import { loadTiming } from './api'
 import { retryTiming, SAVE_ATTEMPTS } from './useCapacity'
 
 // What the manager is told after a save, what the grid shows, and where focus
@@ -1791,6 +1792,28 @@ function holdLoads({ readNow }: { readNow: boolean }) {
 const loads = () => vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method !== 'PATCH').length
 
 describe('a failed load', () => {
+  it('ends a load that gets no answer, and offers Retry', async () => {
+    fakeServer([])
+    const original = vi.mocked(fetch).getMockImplementation()!
+    let first = true
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      if (init?.method === 'PATCH' || !first) return original(url, init)
+      first = false
+      // No answer: only the request's own signal ends it.
+      return new Promise<Response>((_, reject) => init?.signal?.addEventListener('abort', () => reject(init.signal!.reason)))
+    })
+    const saved = loadTiming.timeoutMs
+    loadTiming.timeoutMs = 50
+    try {
+      render(<CapacityGrid from="2026-01-05" to="2026-01-18" onRangeChange={() => {}} />)
+      expect(await screen.findByRole('alert')).toHaveTextContent("didn't answer")
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+      await screen.findByText('Dee Okafor', { selector: 'th' })
+    } finally {
+      loadTiming.timeoutMs = saved
+    }
+  })
+
   it('loads again at every Retry, not just the first', async () => {
     fakeServer([])
     failLoads(2)
@@ -1876,6 +1899,43 @@ describe('what the grid marks', () => {
     const outcome = await screen.findByText(/^Not saved\./)
     expect(region).toBeInTheDocument()
     expect(region).toContainElement(outcome)
+  })
+
+  it('announces information from the same region too, not one made with it', async () => {
+    const server = fakeServer(['refuse'])
+    const { rerender } = renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    fireEvent.click(capButton('Dee Okafor'))
+    const region = screen.getByText('Changes capacity for every week, past and future.').closest('[aria-live]')
+    await edit('Dee Okafor', '50')
+    await screen.findByText(/^Not saved\./)
+    server.changeElsewhere(4, 50)
+    nextRange(rerender)
+    const info = await screen.findByText('The weekly hours on the server are 50h now, the value you entered.')
+    expect(info).toHaveAttribute('role', 'status')
+    expect(region).toBeInTheDocument()
+    expect(region).toContainElement(info)
+  })
+
+  it('announces the "?" note from the same region when it appears while the editor is open', async () => {
+    const server = fakeServer(['store', 'store'])
+    const { rerender } = renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    const releaseLoad = holdLoads({ readNow: false })
+    nextRange(rerender)
+    await waitFor(() => expect(loads()).toBe(2))
+    await edit('Dee Okafor', '45')
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    fireEvent.click(capButton('Dee Okafor'))
+    const region = screen.getByText('Changes capacity for every week, past and future.').closest('[aria-live]')
+    server.changeElsewhere(4, 60)
+    failLoads(1)
+    await releaseLoad() // can't be placed: "?"
+    const note = await screen.findByText(/may hold a newer value than shown/, { selector: '.cap-editor p' })
+    expect(region).toBeInTheDocument()
+    expect(region).toContainElement(note)
   })
 
   it('names the editor and ties its hint to the input', async () => {

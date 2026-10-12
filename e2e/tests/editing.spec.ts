@@ -178,6 +178,10 @@ test('a load sent before a save does not undo the save', async ({ page }) => {
   await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
 
   let lateDelivered = false
+  // The load answers only once the test has seen the save land, not after a
+  // fixed wait a busy machine could outlast.
+  let releaseLoad!: () => void
+  const loadMayAnswer = new Promise<void>((resolve) => (releaseLoad = resolve))
   await routeApi(page, async (route, req) => {
     if (isPatch(req, DEE.id)) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: DEE_AT_50 })
@@ -188,7 +192,7 @@ test('a load sent before a save does not undo the save', async ({ page }) => {
       const json = await response.json()
       const dee = json.people.find((p: { id: number }) => p.id === DEE.id)
       dee.weeklyHours = 40
-      await sleep(1500)
+      await loadMayAnswer
       await settle(() => route.fulfill({ response, json }))
       lateDelivered = true
       return true
@@ -204,6 +208,7 @@ test('a load sent before a save does not undo the save', async ({ page }) => {
   await editorInput(page, DEE.name).press('Enter')
   await expect(capButton(page, DEE.name)).toHaveText('50h')
   expect(lateDelivered).toBe(false) // the save really did land before the load
+  releaseLoad()
 
   await expectWeeks(page, ['5 Jan', '12 Jan', '19 Jan'])
   await expect.poll(() => lateDelivered).toBe(true)

@@ -36,6 +36,13 @@ body {
   }
 }
 
+/* 320px (a phone, or 400% zoom): room for at least one whole week. */
+@media (max-width: 25rem) {
+  :root {
+    --name-width: 4.5rem;
+  }
+}
+
 h1 {
   font-size: 1.4rem;
   margin: 0 0 1rem;
@@ -171,6 +178,21 @@ th.week {
 
 th.week.current {
   box-shadow: inset 0 -3px 0 #2563eb;
+}
+
+/* Forced colours drop shadows and backgrounds: an outline survives. */
+@media (forced-colors: active) {
+  th.week.current {
+    outline: 2px solid CanvasText;
+    outline-offset: -2px;
+  }
+}
+
+@media print {
+  .scroller {
+    max-height: none;
+    overflow: visible;
+  }
 }
 
 .name {

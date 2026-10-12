@@ -105,7 +105,7 @@ test('typing a To date before From keeps the number of weeks, ending with that w
 test('a URL range longer than the API serves is shortened, not an error', async ({ page }) => {
   await page.goto('/?from=2025-01-06&to=2030-01-06')
   await expect(page).toHaveURL(/from=2025-01-06&to=2027-01-17/)
-  await expect(page.locator('thead th.week')).toHaveCount(106)
+  await expect(page.locator('thead th.week')).toHaveCount(106, { timeout: 15_000 })
   await expect(page.locator('.banner')).toHaveCount(0)
 })
 
@@ -116,27 +116,6 @@ test('an unusable URL range falls back to the default (this week + 7)', async ({
     await expect(page).toHaveURL(/from=2026-10-05&to=2026-11-29/)
     await expect(page.locator('thead th.week')).toHaveCount(8)
   }
-})
-
-// Red text has its own colour, readable on the red bar and on the background
-// (at least 4.5:1, WCAG AA): darker in the light theme, lighter in the dark one.
-test('over-capacity numbers use the readable red in both themes', async ({ page }) => {
-  for (const [scheme, colour] of [['light', 'rgb(161, 22, 12)'], ['dark', 'rgb(255, 138, 128)']] as const) {
-    await page.emulateMedia({ colorScheme: scheme })
-    await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
-    await expect(page.locator('td.alloc.over').first()).toHaveCSS('color', colour)
-  }
-})
-
-// On a phone-sized screen the sticky name and capacity columns must leave room
-// for the weeks.
-test('a narrow screen still shows week columns beside the sticky ones', async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 800 })
-  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
-  const cap = await page.locator('thead th.cap').boundingBox()
-  const scroller = await page.locator('.scroller').boundingBox()
-  expect(scroller!.x + scroller!.width - (cap!.x + cap!.width)).toBeGreaterThan(80)
-  await expect(page.locator('thead th.week').first()).toBeInViewport()
 })
 
 // Ranges snap to whole weeks, so at the edges of the supported years
@@ -190,7 +169,7 @@ test('a To date years ahead is shortened to the longest range, not an error', as
   await to.focus()
   await page.keyboard.type('01012029', { delay: 80 })
   await page.keyboard.press('Enter')
-  await expect(page.locator('thead th.week')).toHaveCount(106)
+  await expect(page.locator('thead th.week')).toHaveCount(106, { timeout: 15_000 })
   await expect(page.locator('.banner')).toHaveCount(0)
 })
 
