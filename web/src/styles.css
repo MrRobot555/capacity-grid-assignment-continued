@@ -215,8 +215,11 @@ thead .cap {
   width: 6rem;
 }
 
-.cap-editor .hint {
+.cap-editor .hints {
   flex-basis: 100%;
+}
+
+.cap-editor .hint {
   margin: 0;
   font-size: 0.8rem;
   color: var(--muted);

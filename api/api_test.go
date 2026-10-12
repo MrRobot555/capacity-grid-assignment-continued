@@ -153,6 +153,14 @@ func TestCapacityRejectsBadRanges(t *testing.T) {
 	}
 }
 
+// Year 1 is the first the API serves ("years 0001 to 9999"): only year 0 is refused.
+func TestCapacityServesYearOne(t *testing.T) {
+	s := testServer(t)
+	if rec := do(t, s, "GET", "/api/capacity?from=0001-01-01&to=0001-01-07", ""); rec.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200: %s", rec.Code, rec.Body)
+	}
+}
+
 func TestCapacityAllowsExactlyMaxWeeks(t *testing.T) {
 	s := testServer(t)
 	// 2026-01-05 → 2028-01-16 is 106 Monday-to-Sunday weeks (742 days).

@@ -1065,23 +1065,25 @@ describe('a load and a save placed against each other through the hook', () => {
   })
 
   it('lets a later load win after a 412 re-showed our value a load showed first', async () => {
-    const server = fakeServer(['store-and-lose-answer', 'store'])
-    retryTiming.delay = () => 600
+    // Attempt 1 stored v2/50, its answer lost; attempt 2's 412 read v2/50 at
+    // once, its answer slow. A load showed v2 first; then a load sent after
+    // that read another manager's v3/70.
+    const server = fakeServer(['store-and-lose-answer', 'check-then-hold'])
     const { rerender } = renderGrid()
     await edit('Dee Okafor', '50')
-    await waitFor(() => expect(server.patches()).toHaveLength(1))
-    nextRange(rerender) // shows v2/50 during the backoff
+    await waitFor(() => expect(server.patches()).toHaveLength(2))
+    nextRange(rerender)
     await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/))
     const releaseLoad = holdLoads({ readNow: false })
     thirdRange(rerender)
     await waitFor(() => expect(loads()).toBe(3))
-    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument(), {
-      timeout: 3000,
-    })
+    act(() => server.release()) // the 412 re-shows v2/50: not news
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
     server.changeElsewhere(4, 70)
     await releaseLoad()
     expect(capButton('Dee Okafor')).toHaveTextContent(/^70h$/)
     expect(loads()).toBe(3) // placed, not loaded again
+    expect(server.patches()).toHaveLength(2)
   })
 
   it("lets a later load win after a 412 re-showed another manager's row a load showed first", async () => {
@@ -1182,7 +1184,7 @@ describe('a load and a save placed against each other through the hook', () => {
     expect(loads()).toBe(3)
   })
 
-  it('marks the row with "?" while it is loaded again, and keeps it if that load fails', async () => {
+  it('marks the row with "?" while it is loaded again, keeps it if that load fails, and sends a save of the value shown', async () => {
     const server = fakeServer(['store', 'store'])
     const { rerender } = renderGrid()
     await screen.findByText('Dee Okafor', { selector: 'th' })
@@ -1203,9 +1205,14 @@ describe('a load and a save placed against each other through the hook', () => {
     expect(screen.getByText(/people over capacity/)).toHaveTextContent('(1 with a capacity not yet confirmed, marked ?)')
     fireEvent.click(capButton('Dee Okafor'))
     expect(screen.getByLabelText('Weekly hours for Dee Okafor')).toHaveAccessibleDescription(/may hold a newer value than shown/)
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    // The note is announced with the editor's messages.
+    expect(screen.getByText(/may hold a newer value than shown/).closest('[aria-live]')).toHaveAttribute('aria-live', 'polite')
+    // Saving the value shown is sent, not taken as unchanged: the server may hold another.
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(server.patches()).toHaveLength(3))
     await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^60h$/))
+    const form = screen.getByRole('form', { name: /Edit weekly hours/ })
+    expect(within(form).getByRole('alert')).toHaveTextContent('(now 60h)')
   })
 
   const fourthRange = (rerender: (ui: ReactElement) => void) =>
@@ -1852,6 +1859,15 @@ describe('what the grid marks', () => {
     expect(screen.getByRole('option', { name: '2 weeks' })).toBeInTheDocument()
     rerender(<CapacityGrid from="2026-01-05" to="2026-03-01" onRangeChange={() => {}} />) // 8 weeks
     await waitFor(() => expect(screen.getAllByRole('option', { name: '8 weeks' })).toHaveLength(1))
+  })
+
+  it("announces the editor's messages from a live region that is there before them", async () => {
+    fakeServer([])
+    renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    fireEvent.click(capButton('Dee Okafor'))
+    const hint = screen.getByText('Changes capacity for every week, past and future.')
+    expect(hint.closest('[aria-live]')).toHaveAttribute('aria-live', 'polite')
   })
 
   it('names the editor and ties its hint to the input', async () => {

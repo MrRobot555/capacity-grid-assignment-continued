@@ -245,3 +245,8 @@ left unfinished. Append as you go; a line or two per entry is right.
 - No reviewer found a misplaced answer. What needed work was the new "?": cleared only by newer answers (an older one sent later settles it too), stated as a running load when nothing was loading, and its row's value stated by the editor as the server's.
 - `xmin` repeats after the database is re-created (checked: two fresh clusters give the same xids). Time now decides before the list of older versions, so the grid recovers; the stale If-Match that can match a re-created row is a follow-up, since the fix is a schema change.
 - A Retry query in a new test found two buttons (the banner's and the editor's) when the banner came first; scoped to the editor.
+
+## Review round 20 → no High; the editor's messages announced
+
+- The adversarial reviewer found the placing rule and the "?" sound and raised one Low: the hint became a live region in the same render as its new text, which screen readers often skip. Hint and note now sit in a polite region present from the start.
+- A round-17 test had been emptied by round 18's post-wait check (the 412 it was about was never sent); it now sends it and asserts it.

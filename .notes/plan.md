@@ -8,6 +8,7 @@ Decisions only. Code-level detail lives in the code and its tests.
 > - **JIT is "tuned" by the query shape**, not by settings: the weeks are passed as a `date[]`. See the worklog.
 > - **The save contract grew after the review rounds** (§3 shows the first one): every row carries a `version` (from `xmin`); a save sends `If-Match` and gets `412 { error, current }` when the row has moved on, `503` when the row stays locked past the deadline, and `500 { error, stored: "unknown" }` when its COMMIT got no answer. See `api/people.go` and the register (`.notes/review-register.md`).
 > - **The Go tests** are `api/api_test.go` and `api/oracle_test.go`, not `api/capacity_test.go` (§7).
+> - **The late-GET vs. save race (§4)** is no longer "a confirmed edit wins over any response issued before it": a load sent after the shown version was known reads it or a newer row, so it wins even if it was sent before our save. Every answer is placed by one rule (`place` in `capacityState.ts`); one whose order can't be told leaves the row marked "?" and loads the range again.
 
 ## 1. What the data actually says (probed 2026-10-09; facts, not assumptions)
 

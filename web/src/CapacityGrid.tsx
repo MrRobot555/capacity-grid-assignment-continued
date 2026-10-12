@@ -486,14 +486,19 @@ function CapacityEditor(props: {
       <button type="button" onClick={onCancel} disabled={editing.saving}>
         Cancel
       </button>
-      <p id={hintId} className={error ? 'hint error' : 'hint'} role={error ? 'alert' : outcome ? 'status' : undefined}>
-        {outcome?.text ?? 'Changes capacity for every week, past and future.'}
-      </p>
-      {capacity.note && (
-        <p id={noteId} className="hint">
-          {capacity.note}
+      {/* A live region from the start, so what a save comes to, or a note that
+          appears while the editor is open, is announced: a region created
+          together with its new text often isn't. */}
+      <div className="hints" aria-live="polite">
+        <p id={hintId} className={error ? 'hint error' : 'hint'} role={error ? 'alert' : outcome ? 'status' : undefined}>
+          {outcome?.text ?? 'Changes capacity for every week, past and future.'}
         </p>
-      )}
+        {capacity.note && (
+          <p id={noteId} className="hint">
+            {capacity.note}
+          </p>
+        )}
+      </div>
     </form>
   )
 }
