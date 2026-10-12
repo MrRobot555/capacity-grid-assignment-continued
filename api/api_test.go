@@ -291,7 +291,8 @@ func TestUpdatePersonGivesUpOnALockedRow(t *testing.T) {
 	}
 }
 
-// A 500 must leave a trace in `make logs`; the client only gets a generic message.
+// A failed load must leave a trace in `make logs`; the client only gets a
+// generic message. (Here the request's deadline has passed: a 503.)
 func TestCapacityLogsWhyItFailed(t *testing.T) {
 	s := testServer(t)
 	logs := captureLog(t)
@@ -302,6 +303,25 @@ func TestCapacityLogsWhyItFailed(t *testing.T) {
 	s.routes().ServeHTTP(rec, req)
 	if rec.Code < 500 {
 		t.Fatalf("status %d, want a server failure (5xx)", rec.Code)
+	}
+	if !strings.Contains(logs.String(), "load capacity 2026-01-05..2026-01-05") {
+		t.Errorf("the failure was not logged; log output: %q", logs.String())
+	}
+}
+
+// A load that fails for another reason (here: no database) is a 500, and is logged.
+func TestCapacityLogsAFailedLoad(t *testing.T) {
+	testServer(t) // skips without a database
+	logs := captureLog(t)
+	db, err := pgxpool.New(context.Background(), os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	rec := httptest.NewRecorder()
+	newServer(db).routes().ServeHTTP(rec, httptest.NewRequest("GET", "/api/capacity?from=2026-01-05&to=2026-01-11", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status %d, want 500: %s", rec.Code, rec.Body)
 	}
 	if !strings.Contains(logs.String(), "load capacity 2026-01-05..2026-01-05") {
 		t.Errorf("the failure was not logged; log output: %q", logs.String())
@@ -344,8 +364,13 @@ func TestCapacityGivesUpBehindALock(t *testing.T) {
 	t.Cleanup(func() { loadTimeout = saved })
 	logs := captureLog(t)
 
+	// The request's own limit, well past the API's, so a missing deadline fails
+	// here in seconds instead of hanging the package.
+	ctx5, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	start := time.Now()
-	rec := do(t, s, "GET", "/api/capacity?from=2026-01-05&to=2026-01-11", "")
+	rec := httptest.NewRecorder()
+	s.routes().ServeHTTP(rec, httptest.NewRequest("GET", "/api/capacity?from=2026-01-05&to=2026-01-11", nil).WithContext(ctx5))
 	if took := time.Since(start); took > 3*time.Second {
 		t.Errorf("took %v; it should give up at the deadline", took)
 	}

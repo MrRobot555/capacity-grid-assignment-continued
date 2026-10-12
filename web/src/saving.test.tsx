@@ -1792,6 +1792,35 @@ function holdLoads({ readNow }: { readNow: boolean }) {
 const loads = () => vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method !== 'PATCH').length
 
 describe('a failed load', () => {
+  it('cancels a load once another range is asked for', async () => {
+    fakeServer([])
+    const signals: AbortSignal[] = []
+    const original = vi.mocked(fetch).getMockImplementation()!
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      if (init?.method !== 'PATCH') signals.push(init!.signal!)
+      if (signals.length === 1) return new Promise<Response>(() => {})
+      return original(url, init)
+    })
+    const { rerender } = renderGrid()
+    await waitFor(() => expect(signals).toHaveLength(1))
+    nextRange(rerender)
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    expect(signals[0].aborted).toBe(true)
+    expect(signals[1].aborted).toBe(false)
+  })
+
+  it("ends the API's message with a full stop before the banner's own", async () => {
+    fakeServer([])
+    vi.mocked(fetch).mockImplementation(async () =>
+      new Response(JSON.stringify({ error: "the database didn't respond in time" }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    renderGrid()
+    expect(await screen.findByRole('alert')).toHaveTextContent("the database didn't respond in time.")
+  })
+
   it('ends a load that gets no answer, and offers Retry', async () => {
     fakeServer([])
     const original = vi.mocked(fetch).getMockImplementation()!

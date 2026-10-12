@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { FIXTURE, FIXTURE_WEEKS, openRange, weekLabels } from './helpers'
+import { FIXTURE, FIXTURE_WEEKS, isCapacityGet, openRange, weekLabels } from './helpers'
 
 // How the grid lays out and reads beyond its numbers: contrast, small screens,
 // the sticky header and columns, focus, printing, forced colours, long ranges.
@@ -31,8 +31,13 @@ async function contrast(page: Page, selector: string, onBar = false): Promise<nu
         const first = getComputedStyle(el).backgroundImage.match(/(color\(srgb[^)]*\)|rgba?\([^)]*\))/)![1]
         behind = over(parse(first), behind)
       }
-      const text = parse(getComputedStyle(el).color)
-      const [a, b] = [lum(over(text, behind)), lum(behind)]
+      let shown = over(parse(getComputedStyle(el).color), behind)
+      // A faded ancestor fades text and background towards the page.
+      let opacity = 1
+      for (let n: HTMLElement | null = el; n; n = n.parentElement) opacity *= Number(getComputedStyle(n).opacity)
+      shown = over([...shown, opacity], page)
+      behind = over([...behind, opacity], page)
+      const [a, b] = [lum(shown), lum(behind)]
       return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)
     },
     [selector, onBar] as const,
@@ -57,17 +62,44 @@ test('red text is readable in both themes, over-capacity numbers on their bar to
   }
 })
 
-// On a phone (390px) or at 400% zoom (320px) the sticky name and capacity
-// columns must leave room for at least one whole week.
-test('a narrow screen still shows a whole week beside the sticky columns', async ({ page }) => {
+// While the next range loads (or failed), the previous one stays on screen,
+// marked as stale; its text stays readable.
+test('the grid marked as stale keeps red text readable', async ({ page }) => {
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  await page.route('**/api/capacity**', async (route) => {
+    if (isCapacityGet(route.request())) await held
+    await route.fallback()
+  })
+  await page.getByRole('button', { name: 'Next week' }).click()
+  await expect(page.locator('.scroller')).toHaveClass(/\bstale\b/)
+  expect(await contrast(page, 'td.alloc.over', true)).toBeGreaterThanOrEqual(4.5)
+  release()
+})
+
+// On a phone (390px) or at 400% zoom (320px): the names stay readable, and a
+// whole week fits beside the columns that stay at the left, also a week
+// labelled with its year in a range longer than a year.
+test('a narrow screen keeps names readable and a whole week beside them', async ({ page }) => {
   for (const width of [390, 320]) {
     await page.setViewportSize({ width, height: 800 })
-    await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
-    const cap = (await page.locator('thead th.cap').boundingBox())!
-    const scroller = (await page.locator('.scroller').boundingBox())!
-    const week = (await page.locator('thead th.week').first().boundingBox())!
-    expect(week.x, `${width}px`).toBeGreaterThanOrEqual(cap.x + cap.width - 1)
-    expect(week.x + week.width, `${width}px`).toBeLessThanOrEqual(scroller.x + scroller.width + 1)
+    for (const [from, to] of [[FIXTURE.from, FIXTURE.to], ['2026-09-28', '2027-10-03']]) {
+      await page.goto(`/?from=${from}&to=${to}`)
+      await expect(page.locator('thead th.week').first()).toBeVisible()
+      const room = await page.evaluate(() => {
+        const scroller = document.querySelector('.scroller')!.getBoundingClientRect()
+        const stuck = [...document.querySelectorAll('thead th')].filter((th) => {
+          const cs = getComputedStyle(th)
+          return cs.position === 'sticky' && cs.left !== 'auto'
+        })
+        const edge = Math.max(...stuck.map((th) => th.getBoundingClientRect().right))
+        const widest = Math.max(...[...document.querySelectorAll('thead th.week')].map((th) => th.getBoundingClientRect().width))
+        return { room: scroller.right - edge, widest, name: document.querySelector('thead th.name')!.getBoundingClientRect().width }
+      })
+      expect(room.room, `${width}px, ${from}`).toBeGreaterThanOrEqual(room.widest)
+      expect(room.name, `${width}px: names readable`).toBeGreaterThanOrEqual(120)
+    }
   }
 })
 
@@ -87,6 +119,15 @@ test('the header row and the name and capacity columns stay in place while scrol
   const cap = (await page.locator('tbody td.cap').nth(10).boundingBox())!
   expect(Math.abs(name.x - box.x)).toBeLessThan(3)
   expect(Math.abs(cap.x - (name.x + name.width))).toBeLessThan(2)
+  // The header corner stays above the week headers scrolling under it.
+  for (const cls of ['name', 'cap']) {
+    const corner = (await page.locator(`thead th.${cls}`).boundingBox())!
+    const hit = await page.evaluate(
+      ([x, y]) => document.elementFromPoint(x, y)?.closest('th')?.className,
+      [corner.x + corner.width / 2, corner.y + corner.height / 2],
+    )
+    expect(hit).toBe(cls)
+  }
 })
 
 // A capacity button scrolled into view by focus must not sit under the header.
@@ -97,16 +138,36 @@ test('a focused capacity button is never hidden under the sticky header', async 
   await expect.poll(() => scroller.evaluate((el) => el.scrollTop)).toBeGreaterThan(2000)
   // The header cells are sticky (the thead box itself scrolls away).
   const head = (await page.locator('thead th.week').first().boundingBox())!
-  // A row of the overscan, above the visible part.
+  // A row of the overscan, above the visible part, found by its person: the
+  // fix's own scroll shifts which rows are rendered.
   const buttons = page.locator('.cap-button')
-  let above = -1
+  let id: string | null = null
   for (let i = 0; i < (await buttons.count()); i++) {
     const b = (await buttons.nth(i).boundingBox())!
-    if (b.y + b.height < head.y + head.height) above = i
+    if (b.y + b.height < head.y + head.height) id = await buttons.nth(i).getAttribute('data-person-id')
   }
-  expect(above).toBeGreaterThanOrEqual(0)
-  await buttons.nth(above).focus()
-  await expect.poll(async () => (await buttons.nth(above).boundingBox())!.y).toBeGreaterThanOrEqual(head.y + head.height - 1)
+  expect(id).not.toBeNull()
+  const button = page.locator(`.cap-button[data-person-id="${id}"]`)
+  await button.focus()
+  await expect.poll(async () => (await button.boundingBox())!.y).toBeGreaterThanOrEqual(head.y + head.height - 1)
+})
+
+// The editor gives focus back to its capacity button without scrolling: the
+// grid stays where the manager scrolled it.
+test("closing the editor doesn't scroll the grid back to its row", async ({ page }) => {
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  const scroller = page.locator('.scroller')
+  const id = await page.locator('.cap-button').nth(5).getAttribute('data-person-id')
+  const button = page.locator(`.cap-button[data-person-id="${id}"]`)
+  await button.click()
+  await expect(page.locator('.cap-editor')).toBeVisible()
+  // Scroll so the row sits just above the view, still rendered.
+  await scroller.evaluate((el, b) => (el.scrollTop = (b as HTMLElement).closest('tr')!.offsetTop + 120), await button.elementHandle())
+  const before = await scroller.evaluate((el) => el.scrollTop)
+  await page.keyboard.press('Escape')
+  await expect(button).toBeFocused()
+  await page.waitForTimeout(200)
+  expect(await scroller.evaluate((el) => el.scrollTop)).toBe(before)
 })
 
 // Scrolling a focused button's row out of the rendered window removes it:
@@ -118,19 +179,18 @@ test('focus stays in the grid when its row is scrolled away', async ({ page }) =
   await expect(page.locator('.scroller')).toBeFocused()
 })
 
-// Rows are rendered only near the view; for printing, every row is.
-test('printing renders every row, and the window again afterwards', async ({ page }) => {
+// Printing prints what is on screen (rendering every row of a large roster
+// would freeze the tab, and wide ranges are wider than a page), and says so.
+test('printing says it prints what is on screen, without rendering the whole roster', async ({ page }) => {
   await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
   const rows = page.locator('tbody tr:not(.spacer)')
-  const total = Number((await page.locator('.summary').innerText()).match(/of (\d+) people/)![1])
-  // Scrolled down, so the window starts past the first rows too.
-  await page.locator('.scroller').evaluate((el) => (el.scrollTop = 3000))
-  await expect.poll(() => page.locator('tbody tr:not(.spacer)').first().getAttribute('aria-rowindex')).not.toBe('2')
-  expect(await rows.count()).toBeLessThan(total)
+  const shown = await rows.count()
+  await expect(page.locator('.print-note')).toBeHidden()
+  await page.emulateMedia({ media: 'print' })
   await page.evaluate(() => window.dispatchEvent(new Event('beforeprint')))
-  await expect(rows).toHaveCount(total)
-  await page.evaluate(() => window.dispatchEvent(new Event('afterprint')))
-  await expect.poll(() => rows.count()).toBeLessThan(total)
+  await expect(page.locator('.print-note')).toBeVisible()
+  await expect(page.locator('.print-note')).toContainText('only the people and weeks in view are included')
+  expect(await rows.count()).toBe(shown)
 })
 
 // The current week is marked for screen readers, and in forced colours, where
@@ -145,11 +205,13 @@ test('the current week is marked for screen readers and in forced colours', asyn
   await expect(current).toHaveCSS('outline-style', 'solid')
 })
 
-// Past 52 weeks a day and month repeat: the headers carry the year.
+// Past a year the same weeks of two years sit in one range ("12 Oct" 2026
+// beside "11 Oct" 2027): headers and cell tooltips carry the year.
 test('a range longer than a year names the year of each week', async ({ page }) => {
   await page.goto('/?from=2026-10-12&to=2027-10-17')
   await expect(page.locator('thead th.week')).toHaveCount(53)
   const labels = await weekLabels(page)
   expect(labels[0]).toBe('12 Oct 2026')
   expect(labels[52]).toBe('11 Oct 2027')
+  await expect(page.locator('tbody td.alloc').first()).toHaveAttribute('title', /week of 12 Oct 2026:/)
 })

@@ -263,3 +263,10 @@ left unfinished. Append as you go; a line or two per entry is right.
 - Focus: Chrome scrolls a focused element in only when it is wholly out of view and ignores sticky rows, so neither scroll-padding nor scroll-margin keeps a focused button out from under the sticky header. The grid corrects it on the next frame, after the browser's own scroll. A focused row scrolled out of the window would drop focus to the page; it now moves to the grid.
 - Printing renders every row (beforeprint, synchronously); the current week has aria-current and a forced-colours outline; past 52 weeks headers name the year.
 - The contrast test now measures contrast, not a colour value, for every red text.
+
+## Review round 23 → two of round 22's fixes taken out again
+
+- Printing: rendering every row on `beforeprint` froze the tab for seconds (minutes at a few thousand people) and still printed only the columns that fit a page. A virtualised grid can't print itself; it now prints the screen, and a print-only note says so and how to print others.
+- Narrow screens: a 4.5rem name column fitted a week but left six characters of each name. Now only the names stay at the left below 40rem; the capacity scrolls with the weeks.
+- The stale grid was faded to 0.55, which takes any text below readable contrast; it is marked with a dashed border instead.
+- A round-22 test re-found its button by position after a fix that shifts the rendered rows; it now finds it by person.

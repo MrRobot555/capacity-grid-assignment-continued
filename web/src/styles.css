@@ -34,14 +34,19 @@ body {
   body {
     padding: 1rem 0.5rem;
   }
-}
 
-/* 320px (a phone, or 400% zoom): room for at least one whole week. */
-@media (max-width: 25rem) {
-  :root {
-    --name-width: 4.5rem;
+  /* Only the names stay at the left; the capacity scrolls with the weeks, so a
+     whole week fits beside the names even at 320px (400% zoom). */
+  tbody .cap {
+    position: static;
+  }
+
+  thead .cap {
+    left: auto;
   }
 }
+
+
 
 h1 {
   font-size: 1.4rem;
@@ -132,7 +137,9 @@ select {
 }
 
 .scroller.stale {
-  opacity: 0.55;
+  /* Not by fading: faded text falls below readable contrast. */
+  border: 1px dashed var(--muted);
+  cursor: progress;
 }
 
 table {
@@ -188,10 +195,13 @@ th.week.current {
   }
 }
 
+.print-note {
+  display: none;
+}
+
 @media print {
-  .scroller {
-    max-height: none;
-    overflow: visible;
+  .print-note {
+    display: block;
   }
 }
 

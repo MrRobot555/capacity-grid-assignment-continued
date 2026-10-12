@@ -1,5 +1,4 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type UIEvent } from 'react'
-import { flushSync } from 'react-dom'
 import type { Person } from './api'
 import {
   allocationStatus,
@@ -132,7 +131,8 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
   const windowEnd = Math.min(visible.length, last)
   const windowStart = Math.min(first, windowEnd)
   const showingOtherRange = data !== null && data.key !== rangeKey(from, to)
-  // Past a year, a day and month alone repeat ("12 Oct" twice): show the year.
+  // Past a year the same weeks of two years sit in one range ("12 Oct" 2026
+  // beside "11 Oct" 2027): show the year.
   const weekLabel = (data?.weeks.length ?? 0) > 52 ? formatLong : formatShort
 
   // A focused capacity button whose row scrolls out of the window is removed,
@@ -148,8 +148,11 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
   }, [])
   // The browser scrolls a focused button into view ignoring the sticky header
   // row, so it can land under it. Corrected after the browser's own scroll,
-  // which comes after the focus event.
+  // which comes after the focus event. Not when the grid itself returns focus
+  // without scrolling (`preventScroll`): that leaves the view as it is.
+  const quietFocus = useRef(false)
   const keepClearOfHeader = (button: HTMLElement) =>
+    !quietFocus.current &&
     requestAnimationFrame(() => {
       const scroller = scrollerRef.current
       const header = scroller?.querySelector('thead th')
@@ -171,7 +174,9 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
     if (id === null || editing !== null) return
     returnFocusTo.current = null
     const button = scrollerRef.current?.querySelector<HTMLElement>(`button[data-person-id="${id}"]`)
+    quietFocus.current = true
     ;(button ?? scrollerRef.current)?.focus({ preventScroll: true })
+    quietFocus.current = false
   })
 
   // The row the next save is conditional on: the one the manager was last
@@ -284,6 +289,12 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
         </span>
       </div>
 
+      {/* Rows are rendered only near the view, and wide ranges are wider than
+          a page: printing prints what is on screen, and says so. */}
+      <p className="print-note">
+        Printed from the screen: only the people and weeks in view are included. To print others, scroll to them, or
+        narrow the range or the list first.
+      </p>
       <p className="summary">
         {formatLong(from)} – {formatLong(to)} · {weeks} {weeks === 1 ? 'week' : 'weeks'}
         {data && !showingOtherRange && (
@@ -299,7 +310,7 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
       {state.error && (
         <div className="banner" role="alert">
           <span>
-            Couldn't load {formatLong(from)} – {formatLong(to)}. {state.error}
+            Couldn't load {formatLong(from)} – {formatLong(to)}. {sentence(state.error)}
             {showingOtherRange && ' The grid below still shows the previous range.'}
           </span>
           <button type="button" onClick={retry}>
@@ -387,7 +398,7 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
                     className={[row.isOver && 'is-over', isEditing && 'editing'].filter(Boolean).join(' ') || undefined}
                     aria-rowindex={windowStart + i + 2}
                   >
-                    <th scope="row" className="name">
+                    <th scope="row" className="name" title={row.name}>
                       {row.name}
                     </th>
                     <td className="cap">
@@ -559,19 +570,6 @@ function useRowWindow() {
   const [scrollTop, setScrollTop] = useState(0)
   const [height, setHeight] = useState(800)
   const [rowHeight, setRowHeight] = useState(ROW_HEIGHT_GUESS)
-  // Printing prints what is rendered: every row then, not the window.
-  const [printing, setPrinting] = useState(false)
-  useEffect(() => {
-    // Synchronously, before the browser lays the page out for printing.
-    const before = () => flushSync(() => setPrinting(true))
-    const after = () => setPrinting(false)
-    window.addEventListener('beforeprint', before)
-    window.addEventListener('afterprint', after)
-    return () => {
-      window.removeEventListener('beforeprint', before)
-      window.removeEventListener('afterprint', after)
-    }
-  }, [])
 
   useLayoutEffect(() => {
     const el = scrollerRef.current
@@ -593,8 +591,8 @@ function useRowWindow() {
   return {
     scrollerRef,
     rowHeight,
-    first: printing ? 0 : Math.max(0, Math.floor(scrollTop / rowHeight) - OVERSCAN),
-    last: printing ? Infinity : Math.ceil((scrollTop + height) / rowHeight) + OVERSCAN,
+    first: Math.max(0, Math.floor(scrollTop / rowHeight) - OVERSCAN),
+    last: Math.ceil((scrollTop + height) / rowHeight) + OVERSCAN,
     onScroll: (e: UIEvent<HTMLDivElement>) => setScrollTop(e.currentTarget.scrollTop),
   }
 }
