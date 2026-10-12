@@ -11,6 +11,8 @@ progression can be followed commit by commit.
 
 ## What happened after the submission
 
+Why this work was needed, why it reached into the API, and what remains: [`DECISIONS2.md`](DECISIONS2.md).
+
 The submitted code had already been through one review round (21 findings,
 fixed in the submission). After that, review continued in rounds, each with two
 independent reviewers: one adversarial, reproducing every finding; one auditing
