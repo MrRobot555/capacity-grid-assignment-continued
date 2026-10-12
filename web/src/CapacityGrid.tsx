@@ -103,7 +103,7 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
   // Set when the editor closes while it still had focus: focus then goes back
   // to that person's capacity button, or to the grid if the row is gone.
   const returnFocusTo = useRef<number | null>(null)
-  const { scrollerRef, first, last, rowHeight, onScroll } = useRowWindow()
+  const { scrollerRef, first, last, rowHeight, onScroll, lastScrollTop } = useRowWindow()
 
   const range = { from, to }
   const weeks = weekCount(from, to)
@@ -151,8 +151,27 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
   // which comes after the focus event. Not when the grid itself returns focus
   // without scrolling (`preventScroll`): that leaves the view as it is.
   const quietFocus = useRef(false)
+  // Tabbing into the grid from outside lands on the first rendered button,
+  // which can be a pre-rendered row above the view (backwards: below it), and
+  // the browser scrolls back to it. Start at the first (last) row in view.
+  const enterAtView = (button: HTMLElement, from: EventTarget | null): boolean => {
+    const scroller = scrollerRef.current
+    if (!scroller || !(from instanceof Element) || from.closest('button[data-person-id]')) return false
+    // Keyboard focus scrolls before the focus event: judge from where the
+    // manager had scrolled, and go back there.
+    scroller.scrollTop = lastScrollTop.current
+    const top = scroller.querySelector('thead th')?.getBoundingClientRect().bottom ?? 0
+    const bottom = scroller.getBoundingClientRect().bottom
+    const inView = Array.from(scroller.querySelectorAll<HTMLElement>('button[data-person-id]')).filter((b) => {
+      const r = b.getBoundingClientRect()
+      return r.top >= top && r.bottom <= bottom
+    })
+    if (inView.length === 0 || inView.includes(button)) return false
+    const forward = (from.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+    ;(forward ? inView[0] : inView[inView.length - 1]).focus({ preventScroll: true })
+    return true
+  }
   const keepClearOfHeader = (button: HTMLElement) =>
-    !quietFocus.current &&
     requestAnimationFrame(() => {
       const scroller = scrollerRef.current
       const header = scroller?.querySelector('thead th')
@@ -289,11 +308,11 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
         </span>
       </div>
 
-      {/* Rows are rendered only near the view, and wide ranges are wider than
-          a page: printing prints what is on screen, and says so. */}
+      {/* Rows are rendered only near the view, in a box that scrolls: the grid
+          can't print itself, so the print says so instead of printing part of it. */}
       <p className="print-note">
-        Printed from the screen: only the people and weeks in view are included. To print others, scroll to them, or
-        narrow the range or the list first.
+        The grid isn't printed: it shows only the rows near the view, in a box that scrolls. The line below covers
+        the whole range.
       </p>
       <p className="summary">
         {formatLong(from)} – {formatLong(to)} · {weeks} {weeks === 1 ? 'week' : 'weeks'}
@@ -413,7 +432,10 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
                         }
                         title={capacity.note ?? undefined}
                         data-person-id={row.id}
-                        onFocus={(e) => keepClearOfHeader(e.currentTarget)}
+                        onFocus={(e) => {
+                          if (quietFocus.current) return
+                          if (!enterAtView(e.currentTarget, e.relatedTarget)) keepClearOfHeader(e.currentTarget)
+                        }}
                         aria-expanded={isEditing}
                         // While a save is in flight (including its repeats) its editor
                         // must stay open, or its outcome would have nowhere to be shown.
@@ -570,6 +592,9 @@ function useRowWindow() {
   const [scrollTop, setScrollTop] = useState(0)
   const [height, setHeight] = useState(800)
   const [rowHeight, setRowHeight] = useState(ROW_HEIGHT_GUESS)
+  // Where the manager last scrolled to, as of the last scroll event (a scroll
+  // the browser makes for focus is only reported after the focus event).
+  const lastScrollTop = useRef(0)
 
   useLayoutEffect(() => {
     const el = scrollerRef.current
@@ -593,7 +618,11 @@ function useRowWindow() {
     rowHeight,
     first: Math.max(0, Math.floor(scrollTop / rowHeight) - OVERSCAN),
     last: Math.ceil((scrollTop + height) / rowHeight) + OVERSCAN,
-    onScroll: (e: UIEvent<HTMLDivElement>) => setScrollTop(e.currentTarget.scrollTop),
+    lastScrollTop,
+    onScroll: (e: UIEvent<HTMLDivElement>) => {
+      lastScrollTop.current = e.currentTarget.scrollTop
+      setScrollTop(e.currentTarget.scrollTop)
+    },
   }
 }
 

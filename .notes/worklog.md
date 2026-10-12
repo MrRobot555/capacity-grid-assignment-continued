@@ -270,3 +270,10 @@ left unfinished. Append as you go; a line or two per entry is right.
 - Narrow screens: a 4.5rem name column fitted a week but left six characters of each name. Now only the names stay at the left below 40rem; the capacity scrolls with the weeks.
 - The stale grid was faded to 0.55, which takes any text below readable contrast; it is marked with a dashed border instead.
 - A round-22 test re-found its button by position after a fix that shifts the rendered rows; it now finds it by person.
+
+## Review round 24 → printing taken out; the count turns down
+
+- Printing broke a third time: the scroll box keeps its screen height in print, so a scrolled grid prints a sliver. The grid is now left out of print, and a note says why.
+- Keyboard focus scrolls before the focus event in Chrome, so "is this button in view?" must be judged from the last scroll event, not the live scrollTop. Tabbing into a scrolled grid now starts at a row in view.
+- A media-query override lost to a later rule of the same specificity (the header corner's z-index); fixed with a more specific selector, and the gate checks what is on top, not the rule.
+- With the reviewers back on the app's real surface, the count went 16 → 10.

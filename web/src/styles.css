@@ -41,8 +41,11 @@ body {
     position: static;
   }
 
-  thead .cap {
+  /* Below the name header, which the capacity header now scrolls under
+     (more specific than the corner rule further down). */
+  thead th.cap {
     left: auto;
+    z-index: 2;
   }
 }
 
@@ -133,13 +136,11 @@ select {
   overflow: auto;
   max-height: calc(100vh - 13rem);
   border: 1px solid var(--line);
-  transition: opacity 120ms;
 }
 
 .scroller.stale {
   /* Not by fading: faded text falls below readable contrast. */
   border: 1px dashed var(--muted);
-  cursor: progress;
 }
 
 table {
@@ -199,9 +200,15 @@ th.week.current {
   display: none;
 }
 
+/* The grid renders only the rows near the view, in a box that scrolls: it
+   can't print itself, so it isn't printed (the summary line is). */
 @media print {
   .print-note {
     display: block;
+  }
+
+  .scroller {
+    display: none;
   }
 }
 

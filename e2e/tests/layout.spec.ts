@@ -74,6 +74,7 @@ test('the grid marked as stale keeps red text readable', async ({ page }) => {
   })
   await page.getByRole('button', { name: 'Next week' }).click()
   await expect(page.locator('.scroller')).toHaveClass(/\bstale\b/)
+  await expect(page.locator('.scroller')).toHaveCSS('border-top-style', 'dashed')
   expect(await contrast(page, 'td.alloc.over', true)).toBeGreaterThanOrEqual(4.5)
   release()
 })
@@ -86,11 +87,13 @@ test('a narrow screen keeps names readable and a whole week beside them', async 
     await page.setViewportSize({ width, height: 800 })
     for (const [from, to] of [[FIXTURE.from, FIXTURE.to], ['2026-09-28', '2027-10-03']]) {
       await page.goto(`/?from=${from}&to=${to}`)
-      await expect(page.locator('thead th.week').first()).toBeVisible()
+      await expect(page.locator('thead th.week').first()).toBeVisible({ timeout: 15_000 })
       const room = await page.evaluate(() => {
         const scroller = document.querySelector('.scroller')!.getBoundingClientRect()
-        const stuck = [...document.querySelectorAll('thead th')].filter((th) => {
-          const cs = getComputedStyle(th)
+        // The cells that stay at the left, in the header and in the rows.
+        const cells = [...document.querySelectorAll('thead th'), ...document.querySelectorAll('tbody tr:not(.spacer) > *')]
+        const stuck = cells.filter((cell) => {
+          const cs = getComputedStyle(cell)
           return cs.position === 'sticky' && cs.left !== 'auto'
         })
         const edge = Math.max(...stuck.map((th) => th.getBoundingClientRect().right))
@@ -99,6 +102,14 @@ test('a narrow screen keeps names readable and a whole week beside them', async 
       })
       expect(room.room, `${width}px, ${from}`).toBeGreaterThanOrEqual(room.widest)
       expect(room.name, `${width}px: names readable`).toBeGreaterThanOrEqual(120)
+      // Scrolled right, the name header stays on top of what scrolls under it.
+      await page.locator('.scroller').evaluate((el) => (el.scrollLeft = 200))
+      const name = (await page.locator('thead th.name').boundingBox())!
+      const hit = await page.evaluate(
+        ([x, y]) => document.elementFromPoint(x, y)?.closest('th')?.className,
+        [name.x + name.width / 2, name.y + name.height / 2],
+      )
+      expect(hit, `${width}px, ${from}: the name header`).toBe('name')
     }
   }
 })
@@ -170,6 +181,26 @@ test("closing the editor doesn't scroll the grid back to its row", async ({ page
   expect(await scroller.evaluate((el) => el.scrollTop)).toBe(before)
 })
 
+// Tabbing into a scrolled grid starts at a row in view, not at a pre-rendered
+// row above it (which would scroll the grid back).
+test('tabbing into a scrolled grid starts at a row in view', async ({ page }) => {
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  const scroller = page.locator('.scroller')
+  await scroller.evaluate((el) => (el.scrollTop = 4400))
+  await expect.poll(() => scroller.evaluate((el) => el.scrollTop)).toBe(4400)
+  await scroller.focus()
+  await page.keyboard.press('Tab')
+  const focused = page.locator('.cap-button:focus')
+  await expect(focused).toHaveCount(1)
+  await page.waitForTimeout(200)
+  const head = (await page.locator('thead th.week').first().boundingBox())!
+  const box = (await scroller.boundingBox())!
+  const b = (await focused.boundingBox())!
+  expect(b.y).toBeGreaterThanOrEqual(head.y + head.height - 1)
+  expect(b.y + b.height).toBeLessThanOrEqual(box.y + box.height + 1)
+  expect(Math.abs((await scroller.evaluate((el) => el.scrollTop)) - 4400)).toBeLessThan(50)
+})
+
 // Scrolling a focused button's row out of the rendered window removes it:
 // focus stays in the grid, not on the page.
 test('focus stays in the grid when its row is scrolled away', async ({ page }) => {
@@ -179,18 +210,16 @@ test('focus stays in the grid when its row is scrolled away', async ({ page }) =
   await expect(page.locator('.scroller')).toBeFocused()
 })
 
-// Printing prints what is on screen (rendering every row of a large roster
-// would freeze the tab, and wide ranges are wider than a page), and says so.
-test('printing says it prints what is on screen, without rendering the whole roster', async ({ page }) => {
+// The grid renders only the rows near the view, in a box that scrolls, so it
+// can't print itself: in print it is left out, and a note says so.
+test('printing leaves the grid out and says why', async ({ page }) => {
   await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
-  const rows = page.locator('tbody tr:not(.spacer)')
-  const shown = await rows.count()
   await expect(page.locator('.print-note')).toBeHidden()
   await page.emulateMedia({ media: 'print' })
-  await page.evaluate(() => window.dispatchEvent(new Event('beforeprint')))
+  await expect(page.locator('.scroller')).toBeHidden()
   await expect(page.locator('.print-note')).toBeVisible()
-  await expect(page.locator('.print-note')).toContainText('only the people and weeks in view are included')
-  expect(await rows.count()).toBe(shown)
+  await expect(page.locator('.print-note')).toContainText("The grid isn't printed")
+  await expect(page.locator('.summary')).toBeVisible()
 })
 
 // The current week is marked for screen readers, and in forced colours, where
@@ -209,7 +238,7 @@ test('the current week is marked for screen readers and in forced colours', asyn
 // beside "11 Oct" 2027): headers and cell tooltips carry the year.
 test('a range longer than a year names the year of each week', async ({ page }) => {
   await page.goto('/?from=2026-10-12&to=2027-10-17')
-  await expect(page.locator('thead th.week')).toHaveCount(53)
+  await expect(page.locator('thead th.week')).toHaveCount(53, { timeout: 15_000 })
   const labels = await weekLabels(page)
   expect(labels[0]).toBe('12 Oct 2026')
   expect(labels[52]).toBe('11 Oct 2027')

@@ -1880,6 +1880,12 @@ describe('a failed load', () => {
 })
 
 describe('what the grid marks', () => {
+  it('gives every name its full text as a tooltip, for names cut short', async () => {
+    fakeServer([])
+    renderGrid()
+    expect(await screen.findByText('Dee Okafor', { selector: 'th' })).toHaveAttribute('title', 'Dee Okafor')
+  })
+
   it('marks who is over, the weeks with someone over, and the row being edited', async () => {
     fakeServer([])
     renderGrid()

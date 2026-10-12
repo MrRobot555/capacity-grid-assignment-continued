@@ -60,7 +60,7 @@ Expected truth for weeks 12-29 / 01-05 / 01-12. **This is the test fixture:**
 - One pure reducer, which is the tested core, plus a thin hook. No state library.
 - **People are normalized** (`id → {name, weeklyHours}`). The range-scoped allocation data is cached separately by range key. An edit touches one person record and is therefore correct in **every** cached range and every derived number (cell colour, totals, counts), with no refetch.
 - Everything shown is **derived at render** from (allocated, weeklyHours). Nothing derived is stored. That rules out a whole class of "the badge didn't update" bugs.
-- **Navigation:** the old grid stays on screen, dimmed, with "Loading…". Superseded requests are aborted, and any response for a range that is no longer current is dropped. Cached ranges show instantly and revalidate in the background.
+- **Navigation:** the old grid stays on screen, marked stale (a dashed border since round 23; it was dimmed), with "Loading…". Superseded requests are aborted, and any response for a range that is no longer current is dropped. Cached ranges show instantly and revalidate in the background.
 - **Late GET vs. save race:** a GET that was *issued before* a save confirmed must not overwrite that person's `weeklyHours`. Rule: a person's confirmed edit wins over any response issued before it.
 - **Range lives in the URL** (`?from=&to=`), so a reviewer can deep-link to the fixture weeks. The default is the current week plus 7 more.
 - **Dates are timezone-safe:** `YYYY-MM-DD` strings with UTC arithmetic only. `new Date('2025-12-29')` combined with local getters shifts the day in negative-offset time zones.
