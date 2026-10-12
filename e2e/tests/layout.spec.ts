@@ -141,26 +141,45 @@ test('the header row and the name and capacity columns stay in place while scrol
   }
 })
 
-// A capacity button scrolled into view by focus must not sit under the header.
-test('a focused capacity button is never hidden under the sticky header', async ({ page }) => {
+/** The capacity buttons wholly in view: below the sticky header, above the scroller's bottom. */
+async function buttonsInView(page: Page): Promise<string[]> {
+  return page.evaluate(() => {
+    const scroller = document.querySelector('.scroller')!
+    const top = document.querySelector('thead th.week')!.getBoundingClientRect().bottom
+    const bottom = scroller.getBoundingClientRect().bottom
+    return [...scroller.querySelectorAll<HTMLElement>('button[data-person-id]')]
+      .filter((b) => b.getBoundingClientRect().top >= top - 1 && b.getBoundingClientRect().bottom <= bottom + 1)
+      .map((b) => b.dataset.personId!)
+  })
+}
+
+// Shift+Tab from the first row in view moves to the row above, which the
+// browser scrolls in ignoring the sticky header: it must not end up under it.
+test('a capacity button reached with Shift+Tab is never hidden under the sticky header', async ({ page }) => {
   await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
   const scroller = page.locator('.scroller')
   await scroller.evaluate((el) => (el.scrollTop = 3000))
-  await expect.poll(() => scroller.evaluate((el) => el.scrollTop)).toBeGreaterThan(2000)
-  // The header cells are sticky (the thead box itself scrolls away).
+  await expect.poll(() => scroller.evaluate((el) => el.scrollTop)).toBe(3000)
+  const first = (await buttonsInView(page))[0]
+  await page.locator(`.cap-button[data-person-id="${first}"]`).focus()
+  await page.keyboard.press('Shift+Tab')
+  const focused = page.locator('.cap-button:focus')
+  await expect(focused).not.toHaveAttribute('data-person-id', first)
   const head = (await page.locator('thead th.week').first().boundingBox())!
-  // A row of the overscan, above the visible part, found by its person: the
-  // fix's own scroll shifts which rows are rendered.
-  const buttons = page.locator('.cap-button')
-  let id: string | null = null
-  for (let i = 0; i < (await buttons.count()); i++) {
-    const b = (await buttons.nth(i).boundingBox())!
-    if (b.y + b.height < head.y + head.height) id = await buttons.nth(i).getAttribute('data-person-id')
+  await expect.poll(async () => (await focused.boundingBox())!.y).toBeGreaterThanOrEqual(head.y + head.height - 1)
+})
+
+// Tab moves from row to row: through every row in turn, not back into view.
+test('Tab moves through the rows one after another', async ({ page }) => {
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  const first = (await buttonsInView(page))[0]
+  await page.locator(`.cap-button[data-person-id="${first}"]`).focus()
+  const visited = [first]
+  for (let i = 0; i < 15; i++) {
+    await page.keyboard.press('Tab')
+    visited.push((await page.locator('.cap-button:focus').getAttribute('data-person-id'))!)
   }
-  expect(id).not.toBeNull()
-  const button = page.locator(`.cap-button[data-person-id="${id}"]`)
-  await button.focus()
-  await expect.poll(async () => (await button.boundingBox())!.y).toBeGreaterThanOrEqual(head.y + head.height - 1)
+  expect(new Set(visited).size).toBe(visited.length)
 })
 
 // The editor gives focus back to its capacity button without scrolling: the
@@ -199,6 +218,74 @@ test('tabbing into a scrolled grid starts at a row in view', async ({ page }) =>
   expect(b.y).toBeGreaterThanOrEqual(head.y + head.height - 1)
   expect(b.y + b.height).toBeLessThanOrEqual(box.y + box.height + 1)
   expect(Math.abs((await scroller.evaluate((el) => el.scrollTop)) - 4400)).toBeLessThan(50)
+})
+
+// Shift+Tab into the grid comes from the browser's own UI (nothing on the page
+// comes after the grid): it starts at the last row in view, without a jump.
+test('Shift+Tab into a scrolled grid starts at the last row in view', async ({ page }) => {
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  const scroller = page.locator('.scroller')
+  await scroller.evaluate((el) => (el.scrollTop = 4400))
+  await expect.poll(() => scroller.evaluate((el) => el.scrollTop)).toBe(4400)
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  await page.keyboard.press('Shift+Tab')
+  const inView = await buttonsInView(page)
+  await expect(page.locator('.cap-button:focus')).toHaveAttribute('data-person-id', inView[inView.length - 1])
+  expect(Math.abs((await scroller.evaluate((el) => el.scrollTop)) - 4400)).toBeLessThan(50)
+})
+
+// With the editor open on the first row in view, its button is disabled:
+// Tab into the grid starts at the next row in view instead.
+test('tabbing into the grid skips the open editor\'s own button', async ({ page }) => {
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  const scroller = page.locator('.scroller')
+  await scroller.evaluate((el) => (el.scrollTop = 2000))
+  await expect.poll(() => scroller.evaluate((el) => el.scrollTop)).toBe(2000)
+  const [first, second] = await buttonsInView(page)
+  await page.locator(`.cap-button[data-person-id="${first}"]`).click()
+  await expect(page.locator('.cap-editor')).toBeVisible()
+  await scroller.focus()
+  await page.keyboard.press('Tab')
+  await expect(page.locator('.cap-button:focus')).toHaveAttribute('data-person-id', second)
+})
+
+// What makes over-allocation obvious at a glance, and the other marks drawn
+// only by the stylesheet: red over-capacity cells, counts and rows; the
+// current week's underline; the edited row's highlight; sticky cells that
+// hide what scrolls under them.
+test('the grid draws its marks: red over capacity, this week, the edited row, opaque sticky cells', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2026-01-07T12:00:00'))
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  const styles = await page.evaluate(() => {
+    const cs = (sel: string) => getComputedStyle(document.querySelector(sel)!)
+    return {
+      cell: cs('td.alloc.over').color,
+      bar: cs('td.alloc.over').backgroundImage,
+      header: cs('.sub.over-text').color,
+      summary: cs('.summary .over-text').color,
+      row: cs('tr.is-over .name').boxShadow,
+      current: cs('thead th.week.current').boxShadow,
+      other: cs('thead th.week:not(.current)').boxShadow,
+      stickyName: cs('tbody th.name').backgroundColor,
+      stickyHead: cs('thead th.week').backgroundColor,
+    }
+  })
+  const red = (c: string) => {
+    const [r, g, b] = c.match(/[\d.]+/g)!.map(Number)
+    return r > g + 60 && r > b + 60
+  }
+  for (const key of ['cell', 'header', 'summary'] as const) expect(red(styles[key]), key).toBe(true)
+  expect(styles.bar).toMatch(/srgb 0\.85/)
+  expect(styles.row).toMatch(/inset/)
+  expect(styles.current).not.toBe('none')
+  expect(styles.other).toBe('none')
+  for (const key of ['stickyName', 'stickyHead'] as const) expect(styles[key], key).not.toMatch(/rgba\(0, 0, 0, 0\)|transparent/)
+  // The row being edited is highlighted.
+  const before = await page.locator('tbody tr').nth(1).evaluate((tr) => getComputedStyle(tr.children[2]).backgroundColor)
+  await page.locator('tbody tr').nth(1).locator('.cap-button').click()
+  await expect(page.locator('tr.editing')).toHaveCount(1)
+  const after = await page.locator('tr.editing').evaluate((tr) => getComputedStyle(tr.children[0]).backgroundColor)
+  expect(after).not.toBe(before)
 })
 
 // Scrolling a focused button's row out of the rendered window removes it:

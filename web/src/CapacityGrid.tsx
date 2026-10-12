@@ -154,20 +154,23 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
   // Tabbing into the grid from outside lands on the first rendered button,
   // which can be a pre-rendered row above the view (backwards: below it), and
   // the browser scrolls back to it. Start at the first (last) row in view.
+  // Focus from the browser's own UI has no `from`: that is Shift+Tab, the only
+  // way in from there, since nothing on the page comes after the grid.
   const enterAtView = (button: HTMLElement, from: EventTarget | null): boolean => {
     const scroller = scrollerRef.current
-    if (!scroller || !(from instanceof Element) || from.closest('button[data-person-id]')) return false
+    if (!scroller || (from instanceof Element && from.closest('button[data-person-id]'))) return false
     // Keyboard focus scrolls before the focus event: judge from where the
     // manager had scrolled, and go back there.
     scroller.scrollTop = lastScrollTop.current
     const top = scroller.querySelector('thead th')?.getBoundingClientRect().bottom ?? 0
     const bottom = scroller.getBoundingClientRect().bottom
-    const inView = Array.from(scroller.querySelectorAll<HTMLElement>('button[data-person-id]')).filter((b) => {
+    // Enabled ones: the open editor's own button can't take focus.
+    const inView = Array.from(scroller.querySelectorAll<HTMLElement>('button[data-person-id]:not(:disabled)')).filter((b) => {
       const r = b.getBoundingClientRect()
       return r.top >= top && r.bottom <= bottom
     })
     if (inView.length === 0 || inView.includes(button)) return false
-    const forward = (from.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+    const forward = from instanceof Node && (from.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
     ;(forward ? inView[0] : inView[inView.length - 1]).focus({ preventScroll: true })
     return true
   }

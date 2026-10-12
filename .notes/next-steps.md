@@ -1,7 +1,7 @@
 # Next steps: resuming the review cycle
 
-Last completed: **review round 24** (all of its findings fixed, committed and
-pushed). Next: **round 25**: run the two reviewers with the briefs below,
+Last completed: **review round 25** (all of its findings fixed, committed and
+pushed). Next: **round 26**: run the two reviewers with the briefs below,
 updated to HEAD and to the last round's changes.
 
 ## Where things are
@@ -14,7 +14,7 @@ updated to HEAD and to the last round's changes.
 | Register | `.notes/review-register.md`: every finding with a verdict, plus the Recurrence table. |
 | Narrative | `.notes/worklog.md` (append only), `CONTINUED.md`, `SCAFFOLD-FINDINGS.md`. |
 
-Findings per round: 23 → 18 → 14 → 9 → 23 → 13 → 6 → 14 → 9 → 16 → 9 → 11 → 8 → 9 → 5 → 8 → 4 → 7 → 11 → 5 → 10 → 13 → 16 → 10. Round 5's rise
+Findings per round: 23 → 18 → 14 → 9 → 23 → 13 → 6 → 14 → 9 → 16 → 9 → 11 → 8 → 9 → 5 → 8 → 4 → 7 → 11 → 5 → 10 → 13 → 16 → 10 → 8. Round 5's rise
 taught the counting rule below; since then the design has been simplified, not
 grown.
 
@@ -40,6 +40,7 @@ grown.
 - **Any `go test` that can hang gets `-timeout`.** Never kill a container mid-test: that once committed an abandoned UPDATE.
 - **Chain doc updates and the commit with `&&`, and check the register before committing.** In round 13 a doc script failed on a quoting error, the commit ran anyway on the next line, and the register update missed the commit.
 - **`pgrep -f`/`pkill -f` patterns match the shell running them**: in round 14 a cleanup `pgrep -f` killed its own shell. Match on something only the target has, or check the PIDs before killing.
+- **Playwright's `-g` is a regular expression**: "Shift+Tab" matches nothing. A mutant run where no test ran is not a survivor; the mutation script now says "NO TESTS RAN".
 - **Make checks print their result.** A silent `test -z "$(gofmt -l .)" &&` guard once skipped the whole Go suite without saying so.
 - **Never edit** `DECISIONS.md` (owner's text), `db/`, `docker-compose.yml`, the Dockerfiles or the `Makefile`.
 
@@ -77,4 +78,5 @@ The **gate auditor** brief asks it to verify a sample of the last round's kill c
 - **`DECISIONS.md`** is the owner's text and was written before the review rounds. Some statements are now outdated:
   - "Two managers editing the same person: right now the last save wins without any warning". Since round 6 the grid gets a 412 conflict instead.
   - "Retrying is fine either way, it just sets the value again". A repeat is now conditional on the version.
+  - "…takes the value from the response and that's it, no reload". An answer whose order can't be told now loads the range again (round 18).
 - **`CONTEXT.md`** is the owner's private helper for writing `DECISIONS.md` (untracked). It describes the submitted state; whether to update it is the owner's call.

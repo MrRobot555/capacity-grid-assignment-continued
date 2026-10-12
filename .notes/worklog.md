@@ -277,3 +277,8 @@ left unfinished. Append as you go; a line or two per entry is right.
 - Keyboard focus scrolls before the focus event in Chrome, so "is this button in view?" must be judged from the last scroll event, not the live scrollTop. Tabbing into a scrolled grid now starts at a row in view.
 - A media-query override lost to a later rule of the same specificity (the header corner's z-index); fixed with a more specific selector, and the gate checks what is on top, not the rule.
 - With the reviewers back on the app's real surface, the count went 16 → 10.
+
+## Review round 25 → stylesheet marks under test
+
+- The adversarial reviewer found two Lows, both in round 24's Tab entry: the open editor's disabled button could be "the first in view", and Shift+Tab from the browser (no `relatedTarget`) was never handled. A `.focus()` call in a test isn't a keyboard step; the R22-A4 test now uses Shift+Tab.
+- Vitest can't see CSS, and the contrast test measured readability, not redness: the marks that make over-allocation obvious were ungated. An e2e test now reads them from the computed styles.

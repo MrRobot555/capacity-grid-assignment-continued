@@ -1880,6 +1880,15 @@ describe('a failed load', () => {
 })
 
 describe('what the grid marks', () => {
+  it('says so when there is nobody at all', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ weeks: ['2026-01-05', '2026-01-12'], people: [] }), { status: 200 })),
+    )
+    renderGrid()
+    expect(await screen.findByText('No people to show.')).toBeInTheDocument()
+  })
+
   it('gives every name its full text as a tooltip, for names cut short', async () => {
     fakeServer([])
     renderGrid()
