@@ -283,7 +283,8 @@ export function CapacityGrid({ from, to, onRangeChange }: Props) {
           outcome={
             editing.invalid !== null
               ? { text: editing.invalid, retry: false, error: true }
-              : editing.failure && failureMessage(editing.failure, editingPerson, state.unsure[editing.id])
+              : editing.failure &&
+                failureMessage(editing.failure, editingPerson, state.unsure[editing.id], certainty(editing.id) === 'checking')
           }
           onChange={(draft) => setEditing({ ...editing, base: shownRow(editing), draft, invalid: null, failure: null })}
           onSubmit={submit}
@@ -434,6 +435,7 @@ function CapacityEditor(props: {
   const { name, capacity, editing, outcome, onChange, onSubmit, onCancel } = props
   const error = outcome?.error ? outcome.text : null
   const hintId = `cap-hint-${editing.id}`
+  const noteId = `cap-note-${editing.id}`
   const inputRef = useRef<HTMLInputElement>(null)
 
   // Focus moves into the editor when it opens for a person, and at no other
@@ -464,7 +466,7 @@ function CapacityEditor(props: {
       </span>
       <input
         aria-label={`Weekly hours for ${name}`}
-        aria-describedby={hintId}
+        aria-describedby={capacity.note ? `${hintId} ${noteId}` : hintId}
         aria-invalid={error !== null}
         type="number"
         inputMode="decimal"
@@ -487,7 +489,11 @@ function CapacityEditor(props: {
       <p id={hintId} className={error ? 'hint error' : 'hint'} role={error ? 'alert' : outcome ? 'status' : undefined}>
         {outcome?.text ?? 'Changes capacity for every week, past and future.'}
       </p>
-      {capacity.note && <p className="hint">{capacity.note}</p>}
+      {capacity.note && (
+        <p id={noteId} className="hint">
+          {capacity.note}
+        </p>
+      )}
     </form>
   )
 }
@@ -569,8 +575,18 @@ function failureMessage(
   f: Failure,
   row: { weeklyHours: number; version: string },
   doubt: { values: number[] } | undefined,
+  checking: boolean,
 ): Outcome {
   if (row.version !== f.sent.version || f.kind === 'changed') {
+    // The row shown may not be the newest (answers arrived out of order): its
+    // value can't be stated as what the server holds.
+    if (checking) {
+      return {
+        text: "The weekly hours on the server changed, and answers arrived out of order, so their value isn't known yet. Loading the grid again shows it; saving again is safe.",
+        retry: true,
+        error: false,
+      }
+    }
     // Whoever stored it, the server holds what was typed: nothing to save.
     if (row.weeklyHours === f.hours) {
       return {

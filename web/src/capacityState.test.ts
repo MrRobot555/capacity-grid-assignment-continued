@@ -75,7 +75,7 @@ describe('allocationStatus', () => {
     expect(capacityView(40, 'certain')).toEqual({ text: '40h', certain: true, note: null, doubt: null })
     expect(capacityView(40, 'retrying')).toMatchObject({ certain: false, note: expect.stringMatching(/Sending it again/), doubt: 'last save not confirmed' })
     expect(capacityView(40, 'unknown')).toMatchObject({ certain: false, note: expect.stringMatching(/may hold a different value/), doubt: 'last save not confirmed' })
-    expect(capacityView(40, 'checking')).toMatchObject({ certain: false, note: expect.stringMatching(/may hold a newer value/), doubt: 'may not be the latest, loading again' })
+    expect(capacityView(40, 'checking')).toMatchObject({ certain: false, note: expect.stringMatching(/may hold a newer value/), doubt: 'may not be the latest' })
   })
 
   it('treats any allocation against zero capacity as over, without dividing', () => {
@@ -298,6 +298,16 @@ describe('capacityReducer', () => {
     )
     const sameSentEarlier = capacityReducer(unplaced, saved(50, 'v2', { over: 'v1', at: 4, stored: false, receivedAt: 6 }))
     expect(certaintyOf(sameSentEarlier, 4)).toBe('checking')
+  })
+
+  it('takes the shown version with other data as a repeat: by time when it can, otherwise marked', () => {
+    // The database was re-created: v1 again, with other hours.
+    const later = run(...load(1, deeAt(50, 'v1')), ...load(3, deeAt(40, 'v1')))
+    expect(later.people[4]).toEqual({ name: 'Dee Okafor', weeklyHours: 40, version: 'v1' })
+    expect(certaintyOf(later, 4)).toBe('certain')
+    const unplaced = run(...load(1, deeAt(50, 'v1')), saved(40, 'v1', { over: 'v0', at: 0.2, stored: false, receivedAt: 2 }))
+    expect(unplaced.people[4].weeklyHours).toBe(50)
+    expect(certaintyOf(unplaced, 4)).toBe('checking')
   })
 
   it('keeps when a version was first known: seeing it again is not news', () => {

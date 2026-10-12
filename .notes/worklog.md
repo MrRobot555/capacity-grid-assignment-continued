@@ -239,3 +239,9 @@ left unfinished. Append as you go; a line or two per entry is right.
 - Now every answer carries when it was sent and when it arrived. A row is newer when it was sent after the shown version was first known; older when its version is known to come before the shown one; otherwise its order can't be told. That last case used to be decided anyway, as certain. Now the grid keeps the row shown, marks it "?" and loads the range again, which is newer than both.
 - Mutation found one branch of the new rule redundant (our save written over the shown version is already covered by the time rule) and it was removed.
 - The save loop now checks the row after each wait, so no attempt is sent once a load has shown a new version.
+
+## Review round 19 → the redesign's rule held; its surface fixed
+
+- No reviewer found a misplaced answer. What needed work was the new "?": cleared only by newer answers (an older one sent later settles it too), stated as a running load when nothing was loading, and its row's value stated by the editor as the server's.
+- `xmin` repeats after the database is re-created (checked: two fresh clusters give the same xids). Time now decides before the list of older versions, so the grid recovers; the stale If-Match that can match a re-created row is a follow-up, since the fix is a schema change.
+- A Retry query in a new test found two buttons (the banner's and the editor's) when the banner came first; scoped to the editor.

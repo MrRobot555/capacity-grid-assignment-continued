@@ -113,6 +113,11 @@ function fakeServer(outcomes: Outcome[]) {
     allocated,
     /** Someone else changes the row (a new version), outside this grid. */
     changeElsewhere: set,
+    /** The database is re-created from the seed: the same rows at the same versions as at the start. */
+    recreate: () => {
+      Object.assign(hours, { 1: 40, 4: 40 })
+      Object.assign(versions, { 1: 1, 4: 1 })
+    },
     patches: () => fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH'),
     ifMatches: () =>
       fetchMock.mock.calls
@@ -395,6 +400,7 @@ describe('after giving up', () => {
     await screen.findByText(/Couldn't confirm the save/)
     expect(capButton('Dee Okafor')).toHaveTextContent('40h ?')
     expect(capButton('Dee Okafor')).toHaveAttribute('title', expect.stringMatching(/may hold a different value/))
+    expect(screen.getByText(/people over capacity/)).toHaveTextContent('(1 with a capacity not yet confirmed, marked ?)')
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
 
     // A confirmed save of someone else doesn't settle Dee.
@@ -987,6 +993,7 @@ describe('a load and a save placed against each other through the hook', () => {
     const releaseLoad = holdLoads({ readNow: false })
     nextRange(rerender)
     await waitFor(() => expect(loads()).toBe(2))
+    expect(server.patches()).toHaveLength(1) // sent between the two attempts
     await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
     expect(server.patches()).toHaveLength(2)
     server.changeElsewhere(4, 60)
@@ -1053,6 +1060,8 @@ describe('a load and a save placed against each other through the hook', () => {
     server.changeElsewhere(4, 70)
     await releaseLoad()
     expect(capButton('Dee Okafor')).toHaveTextContent(/^70h$/)
+    // (Decided by loading again: the load came after two saves of ours, an order
+    // `place` doesn't work out. The 412 cases below are placed without it.)
   })
 
   it('lets a later load win after a 412 re-showed our value a load showed first', async () => {
@@ -1072,6 +1081,7 @@ describe('a load and a save placed against each other through the hook', () => {
     server.changeElsewhere(4, 70)
     await releaseLoad()
     expect(capButton('Dee Okafor')).toHaveTextContent(/^70h$/)
+    expect(loads()).toBe(3) // placed, not loaded again
   })
 
   it("lets a later load win after a 412 re-showed another manager's row a load showed first", async () => {
@@ -1091,6 +1101,7 @@ describe('a load and a save placed against each other through the hook', () => {
     await releaseLoad()
     expect(capButton('Dee Okafor')).toHaveTextContent(/^70h$/)
     expect(screen.getByRole('alert')).toHaveTextContent('(now 70h)')
+    expect(loads()).toBe(3) // placed, not loaded again
   })
 
   it("ignores a late 412's row once a load showed it and a later load a newer one", async () => {
@@ -1187,9 +1198,197 @@ describe('a load and a save placed against each other through the hook', () => {
     await releaseLoad()
     await screen.findByRole('alert')
     expect(capButton('Dee Okafor')).toHaveTextContent(/^50h \?$/)
-    expect(capButton('Dee Okafor')).toHaveAccessibleName(/may not be the latest, loading again/)
+    expect(capButton('Dee Okafor')).toHaveAccessibleName(/may not be the latest\. Edit$/)
     expect(capButton('Dee Okafor')).toHaveAttribute('title', expect.stringContaining('server may hold a newer value'))
+    expect(screen.getByText(/people over capacity/)).toHaveTextContent('(1 with a capacity not yet confirmed, marked ?)')
+    fireEvent.click(capButton('Dee Okafor'))
+    expect(screen.getByLabelText('Weekly hours for Dee Okafor')).toHaveAccessibleDescription(/may hold a newer value than shown/)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^60h$/))
+  })
+
+  const fourthRange = (rerender: (ui: ReactElement) => void) =>
+    rerender(<CapacityGrid from="2026-01-26" to="2026-02-08" onRangeChange={() => {}} />)
+
+  it('clears the "?" when a load sent after the unplaced answer shows a row known to be older', async () => {
+    // Our 412 showed v3/70; a load that read v2/60 earlier arrives after it
+    // and can't be placed. The load sent again reads v3/70, which a save of 50
+    // (v4) has meanwhile passed: older than the row shown, so that row is the newest.
+    const server = fakeServer(['store', 'hold-then-check'])
+    const { rerender } = renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    server.changeElsewhere(4, 60)
+    const releaseFirst = holdLoads({ readNow: true })
+    nextRange(rerender)
+    await waitFor(() => expect(loads()).toBe(2))
+    server.changeElsewhere(4, 70)
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('(now 70h)'))
+    fireEvent.submit(screen.getByLabelText('Weekly hours for Dee Okafor').closest('form')!)
+    await waitFor(() => expect(server.patches()).toHaveLength(2))
+    const releaseAgain = holdLoads({ readNow: true })
+    await releaseFirst()
+    await waitFor(() => expect(loads()).toBe(3))
+    act(() => server.release())
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    await releaseAgain()
+    expect(server.hours[4]).toBe(50)
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/))
+  })
+
+  it.each([false, true])(
+    'never states a "?" row as what the server holds (loading again fails: %s)',
+    async (fail) => {
+      // Attempt 1 stored v2/50, answer lost; a load read v2/50; another manager
+      // saved 70 (v3); attempt 2's 412 read v3/70, answered after the load.
+      const server = fakeServer(['store-and-lose-answer', 'check-then-hold'])
+      retryTiming.delay = () => 300
+      const { rerender } = renderGrid()
+      await edit('Dee Okafor', '50')
+      await waitFor(() => expect(server.patches()).toHaveLength(1))
+      const releaseLoad = holdLoads({ readNow: true })
+      nextRange(rerender)
+      await waitFor(() => expect(loads()).toBe(2))
+      server.changeElsewhere(4, 70)
+      await waitFor(() => expect(server.patches()).toHaveLength(2))
+      await releaseLoad()
+      if (fail) failLoads(1)
+      act(() => server.release())
+      if (fail) {
+        await waitFor(() => expect(editorStatus()).toHaveTextContent("their value isn't known yet"))
+        const form = screen.getByRole('form', { name: /Edit weekly hours/ })
+        expect(form).not.toHaveTextContent('on the server are 50h now')
+        expect(within(form).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+      } else {
+        await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('(now 70h)'))
+      }
+    },
+  )
+
+  it('takes the row again after the database was re-created, though its version was seen before', async () => {
+    const server = fakeServer(['store', 'store'])
+    const { rerender } = renderGrid()
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/))
+    server.recreate() // Dee is at v1/40 again
+    nextRange(rerender)
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^40h$/))
+    await edit('Dee Okafor', '60')
+    await waitFor(() => expect(server.hours[4]).toBe(60))
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^60h$/))
+  })
+
+  it('forgets which versions came before once they repeat', async () => {
+    // After the database is re-created, v2 comes back as a new row: it must
+    // not count as one of the versions known to be older.
+    const server = fakeServer(['store'])
+    const { rerender } = renderGrid()
+    await edit('Dee Okafor', '50') // v2/50
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^50h$/))
+    server.recreate() // v1/40
+    const releaseLoad = holdLoads({ readNow: false })
+    nextRange(rerender)
+    await waitFor(() => expect(loads()).toBe(2))
+    await edit('Dee Okafor', '55') // a 412 with v1/40, sent after v2 was known: newer, a repeat
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^40h$/))
+    server.changeElsewhere(4, 70) // v2 again
+    await releaseLoad() // reads v2/70, sent before v1 was known: can't be placed
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^70h$/))
+  })
+
+  it('ignores a late 412 two versions behind, without loading again', async () => {
+    const server = fakeServer(['check-then-hold'])
+    const { rerender } = renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    server.changeElsewhere(4, 60)
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(server.patches()).toHaveLength(1))
+    nextRange(rerender)
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^60h$/))
+    server.changeElsewhere(4, 70)
+    thirdRange(rerender)
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^70h$/))
+    server.changeElsewhere(4, 80)
+    fourthRange(rerender)
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^80h$/))
+    act(() => server.release())
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('(now 80h)'))
+    expect(capButton('Dee Okafor')).toHaveTextContent(/^80h$/)
+    expect(loads()).toBe(4)
+  })
+
+  it('stays marked when a save sent between two unplaceable answers is answered after the second', async () => {
+    const server = fakeServer(['store', 'store', 'store-and-hold-answer', 'check-then-hold'])
+    const { rerender } = renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    const releaseFirst = holdLoads({ readNow: false })
+    nextRange(rerender)
+    await waitFor(() => expect(loads()).toBe(2))
+    await edit('Dee Okafor', '45')
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    await edit('Dee Okafor', '50')
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    await edit('Dee Okafor', '55') // stored at once, answer held
+    await waitFor(() => expect(server.patches()).toHaveLength(3))
+    server.changeElsewhere(4, 60)
+    const releaseAgain = holdLoads({ readNow: false })
+    await releaseFirst() // can't be placed
+    await waitFor(() => expect(loads()).toBe(3))
+    expect(capButton('Dee Okafor')).toHaveTextContent(/^50h \?$/)
+    act(() => server.release()) // our 200 (55): newer, sent before that answer arrived
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    expect(capButton('Dee Okafor')).toHaveTextContent(/^55h \?$/)
+    await edit('Dee Okafor', '65') // its 412 reads v5/60 at once
+    await waitFor(() => expect(server.patches()).toHaveLength(4))
+    server.changeElsewhere(4, 70)
+    failLoads(1)
+    await releaseAgain() // shows v6/70: can't be placed either
+    await waitFor(() => expect(loads()).toBe(4))
+    act(() => server.release()) // the 412 (v5/60): newer than v4, sent before the second answer arrived
+    await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^60h/))
+    expect(server.hours[4]).toBe(70)
+    expect(capButton('Dee Okafor')).toHaveTextContent(/^60h \?$/)
+  })
+
+  it('keeps the "?" when a 200 sent before the unplaced answer arrived comes after it', async () => {
+    const server = fakeServer(['store', 'store-and-hold-answer'])
+    const { rerender } = renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    const releaseLoad = holdLoads({ readNow: false })
+    nextRange(rerender)
+    await waitFor(() => expect(loads()).toBe(2))
+    await edit('Dee Okafor', '45')
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    await edit('Dee Okafor', '55') // stored at once, answer held
+    await waitFor(() => expect(server.patches()).toHaveLength(2))
+    server.changeElsewhere(4, 60)
+    failLoads(1)
+    await releaseLoad() // can't be placed
+    await waitFor(() => expect(loads()).toBe(3))
+    act(() => server.release())
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    expect(server.hours[4]).toBe(60)
+    expect(capButton('Dee Okafor')).toHaveTextContent(/^55h \?$/)
+  })
+
+  it('clears the "?" with an attempt sent after the unplaced answer arrived', async () => {
+    const server = fakeServer(['store', 'lose-request', 'store'])
+    retryTiming.delay = () => 300
+    const { rerender } = renderGrid()
+    await screen.findByText('Dee Okafor', { selector: 'th' })
+    const releaseLoad = holdLoads({ readNow: false })
+    nextRange(rerender)
+    await waitFor(() => expect(loads()).toBe(2))
+    await edit('Dee Okafor', '45')
+    await waitFor(() => expect(screen.queryByLabelText('Weekly hours for Dee Okafor')).not.toBeInTheDocument())
+    await edit('Dee Okafor', '50') // attempt 1 lost
+    await waitFor(() => expect(server.patches()).toHaveLength(2))
+    server.changeElsewhere(4, 60)
+    failLoads(1)
+    await releaseLoad() // can't be placed
+    await waitFor(() => expect(loads()).toBe(3))
+    await waitFor(() => expect(server.patches()).toHaveLength(3), { timeout: 2000 }) // attempt 2: 412 with v3/60
     await waitFor(() => expect(capButton('Dee Okafor')).toHaveTextContent(/^60h$/))
   })
 

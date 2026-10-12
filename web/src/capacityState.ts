@@ -31,8 +31,8 @@ export function formatHours(hours: number): string {
  *  - 'certain':  the last value the server confirmed or loaded;
  *  - 'retrying': a save of ours got no definite answer and is being sent again;
  *  - 'unknown':  we stopped sending it without a definite answer;
- *  - 'checking': two answers came whose order can't be told, so the grid is
- *    loading the row again (see `place`).
+ *  - 'checking': two answers came whose order can't be told, so the server
+ *    may hold a newer value; the grid loads the range again (see `place`).
  */
 export type Certainty = 'certain' | 'retrying' | 'unknown' | 'checking'
 
@@ -57,13 +57,13 @@ const NOTES: Record<Exclude<Certainty, 'certain'>, string> = {
   retrying: 'The last save got no answer yet. Sending it again until the server answers…',
   unknown:
     "The last save couldn't be confirmed, so the server may hold a different value. Saving again is safe and confirms it.",
-  checking: 'Answers came in an order that can’t be told apart, so the server may hold a newer value. Loading it again…',
+  checking: 'Answers arrived out of order, so the server may hold a newer value than shown. Loading the grid again shows it.',
 }
 
 const DOUBTS: Record<Exclude<Certainty, 'certain'>, string> = {
   retrying: 'last save not confirmed',
   unknown: 'last save not confirmed',
-  checking: 'may not be the latest, loading again',
+  checking: 'may not be the latest',
 }
 
 export function capacityView(weeklyHours: number, certainty: Certainty): CapacityView {
@@ -167,43 +167,52 @@ export function rangeKey(from: ISODate, to: ISODate): string {
 type Answer = { row: Row; sentAt: number; receivedAt: number; over?: string }
 
 /**
- * Where an answer's row stands against the row shown. Versions never repeat
- * and the server's history is one line, so:
+ * Where an answer's row stands against the row shown. The server's history is
+ * one line, so:
  *  - newer, when it was sent after the shown version first became known: the
  *    server already held that version, and read later. (This covers our save
  *    written over the shown version: it was sent on a version already known.)
+ *    Time decides first, because it holds even when versions repeat, as `xmin`
+ *    does after the database is re-created or restored;
  *  - older, when its version is one known to come before the shown one, or it
  *    is our save written over such a version (then the shown row came after
  *    ours: it is neither ours nor the one ours followed);
- *  - unknown otherwise. Nothing else can tell, so the row shown stays, marked,
- *    and the range is loaded again: a load sent now is newer than both.
+ *  - unknown otherwise, including the shown version carrying other data (a
+ *    repeat). Nothing else can tell, so the row shown stays, marked, and the
+ *    range is loaded again: a load sent now is newer than both.
  */
 function place(state: State, id: number, a: Answer): 'new' | 'same' | 'newer' | 'older' | 'unknown' {
   const shown = state.people[id]
   if (shown === undefined) return 'new'
-  if (a.row.version === shown.version) return 'same'
+  if (a.row.version === shown.version && a.row.weeklyHours === shown.weeklyHours && a.row.name === shown.name) return 'same'
+  if (a.sentAt > state.knownAt[id]) return 'newer'
+  if (a.row.version === shown.version) return 'unknown'
   const older = state.older[id] ?? []
   if (older.includes(a.row.version)) return 'older'
   if (a.over !== undefined && older.includes(a.over)) return 'older'
-  if (a.sentAt > state.knownAt[id]) return 'newer'
   return 'unknown'
 }
 
 /** The state after one answer about one person. */
 function answered(state: State, id: number, a: Answer): State {
   const where = place(state, id, a)
-  // A request sent after the unplaceable answer arrived read the row after it
-  // and after the row shown: a newer or the same row settles the question.
-  const settles = (where === 'same' || where === 'newer' || where === 'new') && a.sentAt > (state.checking[id] ?? Infinity)
+  // An answer sent after the unplaceable one arrived read the server after it:
+  // its row is at or after that one. Placed against the row shown (newer, the
+  // same, or older, which puts the row shown after it too), it settles which
+  // is the newest.
+  const settles = where !== 'unknown' && a.sentAt > (state.checking[id] ?? Infinity)
   const checking = settles ? without(state.checking, id) : state.checking
   if (where === 'same' || where === 'older') return { ...state, checking }
   if (where === 'unknown') {
     return { ...state, checking: { ...state.checking, [id]: a.receivedAt }, recheck: state.recheck + 1 }
   }
   const shown = state.people[id]
+  // A newer row at a version already seen: versions repeated (the database was
+  // re-created), so what was known to be older no longer says anything.
+  const repeated = shown !== undefined && (a.row.version === shown.version || (state.older[id] ?? []).includes(a.row.version))
   // (A stored save's `over` is the row shown or already among the older: it
   // was the row shown when the save was sent.)
-  const before = [...(state.older[id] ?? []), ...(shown ? [shown.version] : [])]
+  const before = repeated ? [] : [...(state.older[id] ?? []), ...(shown ? [shown.version] : [])]
   return {
     ...state,
     checking,
