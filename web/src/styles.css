@@ -5,14 +5,35 @@
   --line: color-mix(in srgb, currentColor 18%, transparent);
   --muted: color-mix(in srgb, currentColor 55%, transparent);
   --over: #d92d20;
+  /* Red text: at least 4.5:1 on the background and on the red bar (WCAG AA). */
+  --over-text: #a1160c;
+  --name-width: 14rem;
   --full: #12805c;
   --bar: color-mix(in srgb, #2563eb 22%, transparent);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --over-text: #ff8a80;
+  }
 }
 
 body {
   margin: 0;
   padding: 2rem;
   background: var(--bg);
+}
+
+/* On a narrow screen the sticky name and capacity columns would cover every
+   week: narrower names, less margin. */
+@media (max-width: 40rem) {
+  :root {
+    --name-width: 8rem;
+  }
+
+  body {
+    padding: 1rem 0.5rem;
+  }
 }
 
 h1 {
@@ -77,7 +98,7 @@ select {
 }
 
 .over-text {
-  color: var(--over);
+  color: var(--over-text);
 }
 
 .banner {
@@ -139,7 +160,7 @@ thead th {
 }
 
 .sub.over-text {
-  color: var(--over);
+  color: var(--over-text);
   font-weight: 600;
 }
 
@@ -156,9 +177,9 @@ th.week.current {
   position: sticky;
   left: 0;
   z-index: 1;
-  width: 14rem;
-  min-width: 14rem;
-  max-width: 14rem;
+  width: var(--name-width);
+  min-width: var(--name-width);
+  max-width: var(--name-width);
   overflow: hidden;
   text-overflow: ellipsis;
   font-weight: 500;
@@ -166,7 +187,7 @@ th.week.current {
 
 .cap {
   position: sticky;
-  left: calc(14rem + 1.2rem + 1px);
+  left: calc(var(--name-width) + 1.2rem + 1px);
   z-index: 1;
   min-width: 5.5rem;
 }
@@ -226,7 +247,7 @@ thead .cap {
 }
 
 .cap-editor .hint.error {
-  color: var(--over);
+  color: var(--over-text);
   font-weight: 600;
 }
 
@@ -241,7 +262,7 @@ tr.editing > * {
 
 .cap-editor .unconfirmed,
 .cap-button .unconfirmed {
-  color: var(--over);
+  color: var(--over-text);
   font-weight: 700;
 }
 
@@ -283,7 +304,7 @@ td.alloc.full {
 
 td.alloc.over {
   --bar: color-mix(in srgb, var(--over) 28%, transparent);
-  color: var(--over);
+  color: var(--over-text);
   font-weight: 700;
 }
 

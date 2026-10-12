@@ -225,6 +225,8 @@ func TestUpdatePerson(t *testing.T) {
 		{"/api/people/3", `{"weeklyHours": 169}`, http.StatusBadRequest},
 		{"/api/people/3", `{"weeklyHours": 168.5}`, http.StatusBadRequest},
 		{"/api/people/3", `{"weeklyHours": -0.5}`, http.StatusBadRequest},
+		{"/api/people/3", `{"weeklyHours": 168.01}`, http.StatusBadRequest},
+		{"/api/people/3", `{"weeklyHours": -0.01}`, http.StatusBadRequest},
 		{"/api/people/3", `{"weeklyHours": 10, "name": "x"}`, http.StatusBadRequest},
 		{"/api/people/999999", `{"weeklyHours": 10}`, http.StatusNotFound},
 		{"/api/people/0", `{"weeklyHours": 10}`, http.StatusBadRequest},
@@ -293,8 +295,8 @@ func TestUpdatePersonGivesUpOnALockedRow(t *testing.T) {
 func TestCapacityLogsWhyItFailed(t *testing.T) {
 	s := testServer(t)
 	logs := captureLog(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // the query fails at once
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel() // past its deadline: the query fails at once
 	req := httptest.NewRequest("GET", "/api/capacity?from=2026-01-05&to=2026-01-11", nil).WithContext(ctx)
 	rec := httptest.NewRecorder()
 	s.routes().ServeHTTP(rec, req)
@@ -303,6 +305,19 @@ func TestCapacityLogsWhyItFailed(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "load capacity 2026-01-05..2026-01-05") {
 		t.Errorf("the failure was not logged; log output: %q", logs.String())
+	}
+}
+
+// A load the client abandoned (the grid moved on) is not a failure: no log line.
+func TestCapacityDoesNotLogAnAbandonedLoad(t *testing.T) {
+	s := testServer(t)
+	logs := captureLog(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest("GET", "/api/capacity?from=2026-01-05&to=2026-01-11", nil).WithContext(ctx)
+	s.routes().ServeHTTP(httptest.NewRecorder(), req)
+	if logs.Len() != 0 {
+		t.Errorf("an abandoned load was logged: %q", logs.String())
 	}
 }
 
@@ -332,16 +347,29 @@ func TestUpdatePersonLogsWhyItFailed(t *testing.T) {
 	s := testServer(t)
 	restoreCem(t, s)
 	logs := captureLog(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
 	req := httptest.NewRequest("PATCH", "/api/people/3", strings.NewReader(`{"weeklyHours": 21}`)).WithContext(ctx)
 	rec := httptest.NewRecorder()
 	s.routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status %d, want 500", rec.Code)
+	if rec.Code < 500 {
+		t.Fatalf("status %d, want a server failure (5xx)", rec.Code)
 	}
 	if !strings.Contains(logs.String(), "update person 3:") {
 		t.Errorf("the failure was not logged; log output: %q", logs.String())
+	}
+}
+
+// A conflict is an answer the client acts on, not a server failure: no log line.
+func TestUpdatePersonDoesNotLogAConflict(t *testing.T) {
+	s := testServer(t)
+	restoreCem(t, s)
+	logs := captureLog(t)
+	if rec := patchIfMatch(t, s, "3", "1", `{"weeklyHours": 21}`); rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("status %d, want 412", rec.Code)
+	}
+	if logs.Len() != 0 {
+		t.Errorf("a conflict was logged: %q", logs.String())
 	}
 }
 

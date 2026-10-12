@@ -108,7 +108,11 @@ func (s *server) handleUpdatePerson(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	p, err := s.updateWeeklyHours(ctx, int(id), hours, versions)
 	if err != nil {
-		log.Printf("update person %d: %v", id, err)
+		// A conflict (412) is an answer, not a failure: only failures are logged.
+		var stale *staleError
+		if !errors.As(err, &stale) {
+			log.Printf("update person %d: %v", id, err)
+		}
 		status, body := saveErrorResponse(err)
 		writeJSON(w, status, body)
 		return

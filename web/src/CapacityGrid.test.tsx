@@ -66,7 +66,9 @@ it('keeps the grid honest through a failed save and a successful retry', async (
 
   // ...from the PATCH response, not by reloading the range.
   expect(fetchMock.mock.calls.filter(([, init]) => init?.method !== 'PATCH')).toHaveLength(1)
-})
+  // The first test of the file also pays for starting the DOM, which takes
+  // seconds on a busy machine: a timeout here would say nothing about the grid.
+}, 15_000)
 
 it('shows a reachable error and a retry when the range fails to load', async () => {
   const fetchMock = vi

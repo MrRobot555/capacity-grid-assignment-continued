@@ -250,3 +250,8 @@ left unfinished. Append as you go; a line or two per entry is right.
 
 - The adversarial reviewer found the placing rule and the "?" sound and raised one Low: the hint became a live region in the same render as its new text, which screen readers often skip. Hint and note now sit in a polite region present from the start.
 - A round-17 test had been emptied by round 18's post-wait check (the 412 it was about was never sent); it now sends it and asserts it.
+
+## Review round 21 → new ground: contrast, narrow screens, logs
+
+- No High again. The adversarial reviewer went where earlier rounds hadn't: red text measured 3.0–3.9:1 against WCAG's 4.5 (now its own colour per theme), a 390px screen showed no weeks (narrower names below 40rem), and every abandoned load and 412 was logged as an error (now only failures are).
+- The two log tests had used a cancelled request to force a failure, which is now the "client went away" case; they use an expired deadline instead.

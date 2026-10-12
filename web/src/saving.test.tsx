@@ -1199,6 +1199,8 @@ describe('a load and a save placed against each other through the hook', () => {
     failLoads(1)
     await releaseLoad()
     await screen.findByRole('alert')
+    // The same range was loaded again: the grid shows that range, not a previous one.
+    expect(document.querySelector('.banner')).not.toHaveTextContent('previous range')
     expect(capButton('Dee Okafor')).toHaveTextContent(/^50h \?$/)
     expect(capButton('Dee Okafor')).toHaveAccessibleName(/may not be the latest\. Edit$/)
     expect(capButton('Dee Okafor')).toHaveAttribute('title', expect.stringContaining('server may hold a newer value'))
@@ -1862,12 +1864,18 @@ describe('what the grid marks', () => {
   })
 
   it("announces the editor's messages from a live region that is there before them", async () => {
-    fakeServer([])
+    fakeServer(['refuse'])
     renderGrid()
     await screen.findByText('Dee Okafor', { selector: 'th' })
     fireEvent.click(capButton('Dee Okafor'))
     const hint = screen.getByText('Changes capacity for every week, past and future.')
-    expect(hint.closest('[aria-live]')).toHaveAttribute('aria-live', 'polite')
+    const region = hint.closest('[aria-live]')
+    expect(region).toHaveAttribute('aria-live', 'polite')
+    // The same region carries the outcome: one made together with it isn't announced.
+    await edit('Dee Okafor', '50')
+    const outcome = await screen.findByText(/^Not saved\./)
+    expect(region).toBeInTheDocument()
+    expect(region).toContainElement(outcome)
   })
 
   it('names the editor and ties its hint to the input', async () => {

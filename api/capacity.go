@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"time"
@@ -114,6 +115,11 @@ func (s *server) handleCapacity(w http.ResponseWriter, r *http.Request) {
 
 	people, err := loadCapacity(r.Context(), s.db, weeks)
 	if err != nil {
+		// The client went away (the grid moved on to another range): nothing
+		// failed, and nobody is left to answer.
+		if errors.Is(r.Context().Err(), context.Canceled) {
+			return
+		}
 		log.Printf("load capacity %s..%s: %v", weeks[0].Format(dateLayout), weeks[len(weeks)-1].Format(dateLayout), err)
 		writeError(w, http.StatusInternalServerError, "could not load capacity")
 		return

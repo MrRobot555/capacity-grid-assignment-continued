@@ -111,9 +111,32 @@ test('a URL range longer than the API serves is shortened, not an error', async 
 
 test('an unusable URL range falls back to the default (this week + 7)', async ({ page }) => {
   await page.clock.setFixedTime(new Date('2026-10-09T12:00:00'))
-  await page.goto('/?from=nope&to=2026-01-18')
-  await expect(page).toHaveURL(/from=2026-10-05&to=2026-11-29/)
-  await expect(page.locator('thead th.week')).toHaveCount(8)
+  for (const query of ['from=nope&to=2026-01-18', 'from=2026-01-05&to=nope', 'from=2026-01-05']) {
+    await page.goto(`/?${query}`)
+    await expect(page).toHaveURL(/from=2026-10-05&to=2026-11-29/)
+    await expect(page.locator('thead th.week')).toHaveCount(8)
+  }
+})
+
+// Red text has its own colour, readable on the red bar and on the background
+// (at least 4.5:1, WCAG AA): darker in the light theme, lighter in the dark one.
+test('over-capacity numbers use the readable red in both themes', async ({ page }) => {
+  for (const [scheme, colour] of [['light', 'rgb(161, 22, 12)'], ['dark', 'rgb(255, 138, 128)']] as const) {
+    await page.emulateMedia({ colorScheme: scheme })
+    await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+    await expect(page.locator('td.alloc.over').first()).toHaveCSS('color', colour)
+  }
+})
+
+// On a phone-sized screen the sticky name and capacity columns must leave room
+// for the weeks.
+test('a narrow screen still shows week columns beside the sticky ones', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 })
+  await openRange(page, FIXTURE.from, FIXTURE.to, FIXTURE_WEEKS)
+  const cap = await page.locator('thead th.cap').boundingBox()
+  const scroller = await page.locator('.scroller').boundingBox()
+  expect(scroller!.x + scroller!.width - (cap!.x + cap!.width)).toBeGreaterThan(80)
+  await expect(page.locator('thead th.week').first()).toBeInViewport()
 })
 
 // Ranges snap to whole weeks, so at the edges of the supported years

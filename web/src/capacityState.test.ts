@@ -337,6 +337,8 @@ describe('parseWeeklyHours', () => {
     expect(parseWeeklyHours('169')).toBeTypeOf('string')
     expect(parseWeeklyHours('168.5')).toBeTypeOf('string')
     expect(parseWeeklyHours('-0.5')).toBeTypeOf('string')
+    expect(parseWeeklyHours('168.01')).toBeTypeOf('string')
+    expect(parseWeeklyHours('-0.01')).toBeTypeOf('string')
     expect(parseWeeklyHours('abc')).toBeTypeOf('string')
   })
 })

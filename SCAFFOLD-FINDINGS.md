@@ -143,8 +143,8 @@ periods.
   assignments span a weekend (3,111 even end on one). Counting calendar days instead of Monday to Friday reports
   **4,779** over-allocated person-weeks instead of **1,626**: nearly three times
   as many false alarms.
-- Every third week is empty, an artefact of the generator. This includes the
-  week after "today" in the default view.
+- Every third week is empty, an artefact of the generator (for example the
+  week of 2026-10-12), so the default view often shows one.
 
 None of this is mentioned in the brief or the schema. All of it was found by
 probing the data. It is verified for every person and week by an independent
