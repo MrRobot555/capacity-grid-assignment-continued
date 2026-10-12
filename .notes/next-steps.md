@@ -1,8 +1,9 @@
 # Next steps: resuming the review cycle
 
-Last completed: **review round 27** (all of its findings fixed, committed and
-pushed). Next: **round 28**: a review for user-perceptible defects only; a round
-with none closes the cycle (the owner's threshold, 2026-10-12): run the two reviewers with the briefs below,
+**The review cycle is closed** (round 28 found no user-perceptible defect, the
+owner's threshold since 2026-10-12). Open: the follow-ups in the register
+(R19-F1, R28-F1…F5) and the owner's items below. A new cycle, if wanted, starts
+from the briefs below with the same threshold.: run the two reviewers with the briefs below,
 updated to HEAD and to the last round's changes.
 
 ## Where things are
@@ -15,7 +16,7 @@ updated to HEAD and to the last round's changes.
 | Register | `.notes/review-register.md`: every finding with a verdict, plus the Recurrence table. |
 | Narrative | `.notes/worklog.md` (append only), `CONTINUED.md`, `SCAFFOLD-FINDINGS.md`. |
 
-Findings per round: 23 → 18 → 14 → 9 → 23 → 13 → 6 → 14 → 9 → 16 → 9 → 11 → 8 → 9 → 5 → 8 → 4 → 7 → 11 → 5 → 10 → 13 → 16 → 10 → 8 → 10 → 3. Round 5's rise
+Findings per round: 23 → 18 → 14 → 9 → 23 → 13 → 6 → 14 → 9 → 16 → 9 → 11 → 8 → 9 → 5 → 8 → 4 → 7 → 11 → 5 → 10 → 13 → 16 → 10 → 8 → 10 → 3 → 0. Round 5's rise
 taught the counting rule below; since then the design has been simplified, not
 grown.
 

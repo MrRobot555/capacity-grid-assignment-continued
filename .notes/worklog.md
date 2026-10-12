@@ -293,3 +293,7 @@ left unfinished. Append as you go; a line or two per entry is right.
 
 - The owner set the threshold to defects a user can perceive: rounds 20–27 had hovered at 8–10 findings with no High, each small fix opening a new edge and the gate audit finding more ungated stylesheet rules. The gate audit of round 27 was stopped before it reported; its leftovers were removed.
 - Round 27's three perceptible Lows all came from round 26's switch to a text field: an orphaned width rule, "1,000" read as one hour (now asked about), and the editor refusing its own "1e-7" draft (now a plain decimal).
+
+## Review round 28 → converged
+
+- No user-perceptible defect. The reviewer recomputed every allocation for 500 people over 85 weeks against the API (0 mismatches) and replayed the editor's conflict, timeout and success paths. Five follow-ups below the threshold are in the register (R28-F1…F5). The cycle is closed.
